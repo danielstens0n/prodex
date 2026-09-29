@@ -191,7 +191,7 @@ invoke authenticated model sessions.
 - Monetary budgets, event retention/pagination, deeper recovery/fault injection.
 - GUI runtime smoke test, installation, bundles, and cross-platform verification.
 
-Track implementation milestones in [plan.md](../plan.md).
+Track public release gates in [release-readiness.md](release-readiness.md).
 
 Activity shows one live-Codex indicator per project, compact title/runtime rows, and
 planning progress or the next-check countdown. Expanded rows hide reports and contain session-opening actions and
@@ -204,9 +204,7 @@ Workspace behavior is configurable per project under Settings → Workspaces.
 Worktrees remain the default. Main-folder coding needs no Git setup and runs one
 Prodex task at a time directly among existing files. Completed results remain
 visible until reviewed/integrated; completion-action order is configurable under
-Settings → When finished. Merge and PR actions continue the agent session in
-Terminal for review and confirmation. Integration acknowledgement is manual, not
-an automated Git verification. See [workspace details](workspaces.md).
+Settings → When finished. Merge locally now runs a managed background job and marks work integrated only after Git verification. No terminal or PR is opened. Open in your preferred app remains a separate session handoff.
 
 
 ### Provider diagnostics

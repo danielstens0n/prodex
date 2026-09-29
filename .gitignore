@@ -34,3 +34,6 @@ secrets.json
 *.key
 *.p12
 *.pfx
+
+# Local implementation notes
+/plan.md

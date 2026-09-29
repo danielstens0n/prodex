@@ -25,6 +25,12 @@ Both processes use `PRODEX_STATE_DIR`, or `$HOME/.local/state/prodex` by default
 After rebuilding the daemon or changing the native window size, restart the daemon
 and desktop application; frontend hot reload alone cannot apply those changes.
 
+Keep `app.windows[].dragDropEnabled` set to `false` in `src-tauri/tauri.conf.json`.
+Activity and Settings use HTML drag-and-drop for reordering; Tauri's native drop
+handler can intercept these events before they reach the page. Changes to this
+setting require rebuilding and restarting the desktop application. Browser UI
+tests do not exercise the native drop handler.
+
 ## Controls
 
 Settings apply across managed agents and save immediately. Provider choices are preserved.
@@ -122,7 +128,7 @@ cancels this project's planning/pending work, and stops its owned workers. Files
 worktrees and history remain. Other projects are unaffected. Add projects reconnects
 the folder and restores its history. Resolve any worker recovery first.
 
-These controls require service protocol 7; older daemons display restart guidance.
+These controls require service protocol 8; older daemons display restart guidance.
 
 Planning defaults to a one-minute interval when eligible, with a service-wide limit
 of 1,440 checks per UTC day. A daily cap is labeled separately with its reset countdown;
@@ -154,14 +160,29 @@ Open **Workspaces** in Settings to choose an individual project and switch
 between the default isolated worktrees and main-folder coding. Main-folder mode
 runs one Prodex coding task at a time; independent sessions share those files.
 
-Open **When finished** to drag the three completion actions into your preferred
-order, or use the up/down buttons. The first applicable action is highlighted;
-the desktop saves this preference locally. Review/merge and Create PR resume the
-existing provider session in macOS Terminal with targeted instructions and task
-metadata. They are guided handoffs, not background merge/publish operations.
+Open **When finished** to order **Merge locally** and **Open in your preferred app**. The first applicable action is highlighted. There is no PR action.
 
-Completed coding results remain visible until review/integration is acknowledged.
-After completing a merge in Terminal, **Mark as integrated** records your manual
-confirmation; merely creating a PR is insufficient. Main-folder results use
-**Mark reviewed** because their edits are already in the project. These actions
-unblock dependencies; they do not inspect or change Git themselves.
+**Merge locally** creates a managed background integration job using the task's provider. It reviews/tests the work, commits task changes and integrates locally. The card shows queued/running/stopped/needs-attention progress and supports Stop/retry. The coding result stays visible until Prodex independently verifies a clean committed task result in the pinned destination branch's history, unchanged destination history, and preserved unrelated staged/unstaged/untracked edits. Only then does one database transaction finish the merge job and mark the source task integrated, releasing dependencies and moving it into completed history. A completed agent turn alone is insufficient. Already-merged committed results can be recognized when the action is selected.
+
+Main-folder results retain **Mark reviewed** because their files are already applied. Merge jobs share concurrency/budget controls and run exclusively against other managed project workers. After a crash they require recovery acknowledgement, like coding workers. Independent human/agent edits cannot be locked; changes during integration cause verification to stop rather than silently mark success. No push, PR or deployment is performed.
+
+### Open sessions in your preferred app
+
+The arrow beside **Open in …** lists supported apps installed in `/Applications`, `~/Applications`, and the macOS utility folders. Selecting an app saves the default on this computer. **Other app…** uses the macOS app picker; custom choices are remembered and checked again on startup. Missing or provider-incompatible preferences fall back to an available destination without overwriting the saved preference.
+
+- Terminal, Ghostty and iTerm run the complete, quoted resume command.
+- Codex opens the existing thread through `codex://threads/<id>` when Codex.app is installed. Only Codex tasks offer it.
+- Claude Code opens Claude.app and copies the Terminal command; use Desktop's `/resume` picker to select the CLI session. Prodex does not invent a Claude session URL or silently migrate API-backed sessions. Desktop authentication/session availability still applies.
+- Zed, VS Code and Cursor open the actual project/worktree folder and copy the resume command for their integrated terminal.
+- Other detected terminals (cmux, Warp, WezTerm, kitty, Alacritty) and manually selected apps open with the resume command copied. They do not yet have automatic command-injection adapters.
+
+**Copy command** always remains available. Opening an app is user-triggered and does not stop a managed worker. Discovery currently targets macOS. No keystrokes, editor extensions or project configuration are injected.
+
+References: [T3 Code editor preferences](https://github.com/pingdotgg/t3code/blob/main/apps/web/src/editorPreferences.ts), [T3 Code app discovery](https://github.com/pingdotgg/t3code/blob/main/packages/shared/src/editor.ts), [Codex deep links](https://learn.chatgpt.com/docs/reference/commands), [Claude Desktop handoff](https://code.claude.com/docs/en/desktop), [Ghostty command options](https://ghostty.org/docs/config/reference).
+
+
+### Background integration permissions
+
+Codex merge workers use `--approve-for-me`, the workspace sandbox, and `--add-dir` for the original project. Claude merge workers use `--permission-mode auto`, the existing restricted mode and an explicit destination directory; shell actions go through its classifier rather than a blanket Bash allowance. Provider/account/managed-policy restrictions can still block a merge and are reported for retry. Neither provider uses a sandbox/approval bypass.
+
+The native Open action only opens/resumes sessions. Merge is owned by the daemon and does not open a terminal. Historical manual integration acknowledgements are retained in the database; new desktop merges require Git verification.

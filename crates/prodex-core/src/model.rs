@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Version 7 adds per-project workspace selection and explicit result acknowledgements.
-pub const PROTOCOL_VERSION: u32 = 7;
+// Version 8 adds managed background merge tasks and verified integration.
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const OBSERVATION_TTL_SECS: u64 = 15;
 
 pub fn now() -> u64 {
@@ -28,6 +28,7 @@ pub enum TaskMode {
     Edit,
     EditInPlace,
     InitializeRepository,
+    Merge,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -308,6 +309,9 @@ pub enum Request {
     SetWorktrees {
         project: PathBuf,
         enabled: bool,
+    },
+    Merge {
+        id: String,
     },
     ConfirmIntegrated {
         id: String,

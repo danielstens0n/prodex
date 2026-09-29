@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 async function setup(page: Page, initialSettings: Record<string, unknown> = {}) {
   await page.addInitScript((initialSettings) => {
     const state = {
-      protocol_version: 7,
+      protocol_version: 8,
       settings: {paused: false, planning_enabled: true, preferred_provider: 'codex', planner_provider: 'claude', max_concurrent: 3, max_per_project: 3,
         task_timeout_secs: 600, max_starts_per_day: 20, planner_cooldown_secs: 60, max_plans_per_day: 1440, auto_approve_read_only: false,
         project_scope: Array.from({length:9}, (_,i)=>`/projects/app-${i+1}`) as string[] | null, planning_free_slots: 2, max_proposal_risk: 'medium'},
@@ -13,9 +13,12 @@ async function setup(page: Page, initialSettings: Record<string, unknown> = {}) 
     Object.assign(state.settings, initialSettings);
     Object.assign(window, {__testState:state, __testRequests:[], __failNext:false, __pickedProjects:[], __pickerCalls:0, __pickerError:false, __clipboardText:null, __copyFailure:false, __openedSession:null, __openFailure:false,
       __TAURI_INTERNALS__: {invoke: async (_command: string, args: {request:Record<string,any>}) => {
+        if (_command==='list_destinations') return (window as any).__destinations??[{id:'terminal',label:'Terminal',kind:'terminal'},{id:'ghostty',label:'Ghostty',kind:'terminal'},{id:'zed',label:'Zed',kind:'editor'},{id:'codex',label:'Codex',kind:'codex'},{id:'claude',label:'Claude Code',kind:'claude'}];
+        if (_command==='pick_destination') return (window as any).__pickedDestination??null;
         if (_command==='open_session') {
-          if ((window as any).__openFailure) throw new Error('Could not open Terminal. Use Copy resume command instead.');
-          (window as any).__openedSession=(args as any).id;(window as any).__openedAction=(args as any).action;return;
+          (window as any).__openedDestination=(args as any).destination;
+          if ((window as any).__openFailure) throw new Error('Could not open Terminal. Use Copy command instead.');
+          (window as any).__openedSession=(args as any).id;(window as any).__openedAction=(args as any).action;return (window as any).__openNotice??null;
         }
         if (_command==='copy_text') {
           if ((window as any).__copyFailure) throw new Error('Could not copy to clipboard');
@@ -36,6 +39,7 @@ async function setup(page: Page, initialSettings: Record<string, unknown> = {}) 
         if(req.command==='unconnect_project'){state.projects.find(p=>p.path===req.project)!.enabled=false;state.settings.project_scope=state.settings.project_scope!.filter(p=>p!==req.project);}
         if(req.command==='check_now'){(state as any).planning_activity=[{project:req.project,message:'Looking for work…',next_check_at:null}];}
         if(req.command==='set_worktrees')(state.projects.find(p=>p.path===req.project)! as any).use_worktrees=req.enabled;
+        if(req.command==='merge'){const source=state.tasks.find(t=>t.id===req.id);state.tasks.push({...structuredClone(source),id:'merge-job',status:'running',review:'not_required',created_at:Date.now()/1000,proposal:{...source.proposal,mode:'merge',dependencies:[source.id]}});}
         if(['mark_reviewed','confirm_integrated'].includes(req.command))state.tasks.find(t=>t.id===req.id).review='integrated';
         if(req.command==='configure')Object.assign(state.settings,req.settings);
         if(req.command==='pause')state.settings.paused=true;
@@ -171,7 +175,7 @@ test('re-adding a disabled project preserves its existing goal',async({page})=>{
   await expect(page.locator('#connection')).toHaveText('Disconnected');
   await expect(page.locator('#error')).toHaveText('Restart the updated Prodex service to use these settings.');
   await expect(page.locator('#activity-projects')).toHaveJSProperty('disabled',true);
-  await page.evaluate(()=>(window as any).__testState.protocol_version=7);
+  await page.evaluate(()=>(window as any).__testState.protocol_version=8);
   await expect(page.locator('#connection')).toHaveText('Connected');
   await expect(page.locator('#error')).toBeHidden();
   await expect(page.locator('#activity-projects')).toHaveJSProperty('disabled',false);
@@ -259,30 +263,27 @@ test('unstarted suggestions copy their prompt without creating a session',async(
   expect(await page.evaluate(()=>(window as any).__testRequests.filter((r:any)=>r.command!=='status'))).toEqual([]);
 });
 
-test('finished Codex and Claude sessions copy quoted resume commands and IDs',async({page})=>{
+test('finished Codex and Claude sessions copy quoted resume commands',async({page})=>{
   await setup(page);const card=await copyFixture(page,'codex','succeeded','codex-session');
   await page.evaluate(()=>(window as any).__testState.tasks[0].worktree="/worktrees/it's $(echo nope)");
-  await card.getByRole('button',{name:'Copy resume command'}).click();
+  await card.getByRole('button',{name:'Copy command'}).click();
   const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
   await expect.poll(()=>page.evaluate(()=>(window as any).__clipboardText)).toBe(`cd -- ${quote("/worktrees/it's $(echo nope)")} && codex resume --include-non-interactive 'codex-session'`);
-  await card.getByRole('button',{name:'Copy session ID'}).click();
-  await expect.poll(()=>page.evaluate(()=>(window as any).__clipboardText)).toBe('codex-session');
+  await expect(card.getByRole('button',{name:'Copy session ID'})).toHaveCount(0);
   await page.evaluate(()=>{const t=(window as any).__testState.tasks[0];t.proposal.provider='claude';t.session_id='claude-session';t.worktree=null;});
-  await card.getByRole('button',{name:'Copy resume command'}).click();
+  await card.getByRole('button',{name:'Copy command'}).click();
   await expect.poll(()=>page.evaluate(()=>(window as any).__clipboardText)).toBe("cd -- '/projects/app-1' && claude --resume 'claude-session'");
 });
 
-test('copy rechecks active sessions and surfaces clipboard errors',async({page})=>{
-  await setup(page);const card=await copyFixture(page,'codex','succeeded','known-session');
-  await page.evaluate(()=>(window as any).__testState.tasks[0].status='running');
-  await card.getByRole('button',{name:'Copy resume command'}).click();
-  await expect(page.locator('#error')).toContainText('Stop this task');
-  expect(await page.evaluate(()=>(window as any).__clipboardText)).toBeNull();
-  await expect(card.getByRole('button',{name:'Copy resume command'})).toHaveCount(0);
-  await card.getByRole('button',{name:'Copy session ID'}).click();
-  await expect.poll(()=>page.evaluate(()=>(window as any).__clipboardText)).toBe('known-session');
+test('running sessions offer full command copying and Terminal access',async({page})=>{
+  await setup(page);const card=await copyFixture(page,'codex','running','known-session');
+  await expect(card.getByRole('button',{name:'Copy session ID'})).toHaveCount(0);
+  await card.getByRole('button',{name:'Copy command'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__clipboardText)).toBe("cd -- '/projects/app-1' && codex resume --include-non-interactive 'known-session'");
+  await card.getByRole('button',{name:'Open in Terminal'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__openedSession)).toBe('copy-task');
   await page.evaluate(()=>(window as any).__copyFailure=true);
-  await card.getByRole('button',{name:'Copy session ID'}).click();
+  await card.getByRole('button',{name:'Copy command'}).click();
   await expect(page.locator('#error')).toContainText('Could not copy');
 });
 
@@ -302,7 +303,7 @@ test('long reports stay out of the card and Open in Terminal is immediately acce
   await page.screenshot({path:'/tmp/prodex-session-actions.png'});
   await page.evaluate(()=>(window as any).__openFailure=true);
   await button.click();await expect(page.locator('#error')).toContainText('Could not open Terminal');
-  await expect(card.getByRole('button',{name:'Copy resume command'})).toBeVisible();
+  await expect(card.getByRole('button',{name:'Copy command'})).toBeVisible();
 });
 
 
@@ -511,35 +512,88 @@ test('completion order can be dragged or moved with buttons and is remembered',a
   const rows=page.locator('#completion-order [role=listitem]');await expect(rows.first()).toHaveAttribute('data-completion-action','merge');
   await page.locator('[data-completion-action=terminal]').dragTo(page.locator('[data-completion-action=merge]'));
   await expect(rows.first()).toHaveAttribute('data-completion-action','terminal');
-  await page.getByRole('button',{name:'Move Create PR up',exact:true}).click();
-  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('prodex.completionOrder')!))).toEqual(['terminal','pr','merge']);
+  await expect(page.getByRole('button',{name:'Create PR',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('prodex.completionOrder')!))).toEqual(['terminal','merge']);
   await page.reload();await page.locator('#settings-tab').click();await page.locator('#completion-page').click();
   await expect(rows.first()).toHaveAttribute('data-completion-action','terminal');
   await expect(page.locator('#completion-page')).toHaveAttribute('aria-pressed','true');
   await page.screenshot({path:'/tmp/prodex-completion-order.png'});
 });
 
-test('finished worktree stays visible for handoff until integration is confirmed',async({page})=>{
-  await setup(page);
-  await page.evaluate(()=>{(window as any).__testState.tasks=[{id:'finished-code',status:'succeeded',review:'awaiting_review',session_id:'session',worktree:'/worktrees/task',created_at:1700000000,updated_at:1700000000,summary:'Done',proposal:{project:'/projects/app-1',provider:'codex',mode:'edit',prompt:'Keep settings after restart',rationale:'Preserve preferences',completion_criteria:'Restart retains preferences'}}];});
-  const card=page.locator('[data-id=finished-code]');await expect(card).toBeVisible();await card.locator('summary').click();
-  await expect(card.getByText('Ready to review · changes are still in the worktree.')).toBeVisible();
-  await expect(card.locator('.task-actions wa-button').first()).toHaveText('Review and merge locally');
-  await card.getByText('Review and merge locally',{exact:true}).click();
-  await expect.poll(()=>page.evaluate(()=>(window as any).__openedAction)).toBe('merge');
-  expect(await page.evaluate(()=>(window as any).__testState.tasks[0].review)).toBe('awaiting_review');
-  await card.getByText('Create PR',{exact:true}).click();await expect.poll(()=>page.evaluate(()=>(window as any).__openedAction)).toBe('pr');
-  await page.screenshot({path:'/tmp/prodex-completed-actions.png'});
-  await card.getByText('Mark as integrated…',{exact:true}).click();await page.locator('#choice-cancel').click();await expect(card).toBeVisible();
-  await card.getByText('Mark as integrated…',{exact:true}).click();await page.locator('#choice-confirm').click();await expect(card).toHaveCount(0);
-  await expect(page.getByText('Show completed (1)',{exact:true})).toBeVisible();
+test('finished worktree merges in the background and disappears only after verification',async({page})=>{
+  await setup(page);const card=await copyFixture(page,'codex','succeeded','finished-session');
+  await page.evaluate(()=>{const t=(window as any).__testState.tasks[0];t.proposal.mode='edit';t.worktree='/worktrees/task';t.review='awaiting_review';});
+  await expect(card.getByRole('button',{name:'Merge locally',exact:true})).toBeVisible();
+  await card.getByRole('button',{name:'Merge locally',exact:true}).click();
+  await expect(card).toContainText('Merging locally');
+  expect(await page.evaluate(()=>(window as any).__openedSession)).toBeNull();
+  await expect(card.getByRole('button',{name:'Stop merge'})).toBeVisible();
+  await expect(card.getByRole('button',{name:'Mark as integrated…'})).toHaveCount(0);
+  await expect(page.locator('[data-id="merge-job"]')).toHaveCount(0);
+  await page.evaluate(()=>{const tasks=(window as any).__testState.tasks;tasks.find((t:any)=>t.id==='merge-job').status='succeeded';tasks.find((t:any)=>t.id==='copy-task').review='integrated';});
+  // History was expanded by the initial fixture; close it to check normal active view.
+  const history=page.getByRole('button',{name:/Hide completed/});
+  await expect(history).toBeVisible();await history.click();
+  await expect(card).toHaveCount(0);
 });
 
 test('main-folder result needs review but has no merge or PR actions',async({page})=>{
   await setup(page);
   await page.evaluate(()=>{(window as any).__testState.tasks=[{id:'direct-code',status:'succeeded',review:'awaiting_review',session_id:'session',worktree:null,created_at:1700000000,updated_at:1700000000,summary:'Done',proposal:{project:'/projects/app-1',provider:'claude',mode:'edit_in_place',prompt:'Keep settings after restart',rationale:'Preserve preferences',completion_criteria:'Restart retains preferences'}}];});
   const card=page.locator('[data-id=direct-code]');await expect(card).toBeVisible();await card.locator('summary').click();
-  await expect(card.getByText('Review and merge locally',{exact:true})).toHaveCount(0);await expect(card.getByText('Create PR',{exact:true})).toHaveCount(0);
+  await expect(card.getByText('Merge locally',{exact:true})).toHaveCount(0);await expect(card.getByText('Create PR',{exact:true})).toHaveCount(0);
   await expect(card.getByText('Open in Terminal',{exact:true})).toBeVisible();
   await card.getByText('Mark reviewed',{exact:true}).click();await page.locator('#choice-confirm').click();await expect(card).toHaveCount(0);
+});
+
+
+test('destination selection is remembered and filters incompatible provider apps',async({page})=>{
+  await setup(page);const card=await copyFixture(page,'codex','running','codex-session');
+  const picker=card.getByRole('combobox',{name:'Open session with'});
+  await expect(picker.locator('option[value=claude]')).toHaveCount(0);
+  await picker.selectOption('ghostty');
+  await card.getByRole('button',{name:'Open in Ghostty'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__openedDestination)).toBe('ghostty');
+  await page.reload();
+  const restored=await copyFixture(page,'codex','running','codex-session');
+  await expect(restored.getByRole('button',{name:'Open in Ghostty'})).toBeVisible();
+  await restored.getByRole('combobox',{name:'Open session with'}).selectOption('codex');
+  await page.evaluate(()=>{(window as any).__testState.tasks[0].proposal.provider='claude';});
+  await expect(restored.getByRole('button',{name:'Open in Terminal'})).toBeVisible();
+  expect(await page.evaluate(()=>localStorage.getItem('prodex.openDestination'))).toBe('codex');
+});
+
+test('editor handoff explains copied command and custom app can be selected',async({page})=>{
+  await setup(page);const card=await copyFixture(page,'codex','running','codex-session');
+  await card.getByRole('combobox',{name:'Open session with'}).selectOption('zed');
+  await page.evaluate(()=>(window as any).__openNotice='Opened Zed. Resume command copied—paste it in the integrated terminal.');
+  await card.getByRole('button',{name:'Open in Zed'}).click();
+  await expect(card).toContainText('paste it in the integrated terminal');
+  await page.screenshot({path:'/tmp/prodex-open-destinations.png'});
+  await page.evaluate(()=>(window as any).__pickedDestination={id:'app:/Applications/My Terminal.app',label:'My Terminal',kind:'clipboard'});
+  await card.getByRole('combobox',{name:'Open session with'}).selectOption('other');
+  await expect(card.getByRole('button',{name:'Open in My Terminal'})).toBeVisible();
+  await card.getByRole('button',{name:'Open in My Terminal'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__openedDestination)).toBe('app:/Applications/My Terminal.app');
+});
+
+
+test('missing saved apps fall back without losing the preference and picker cancel is harmless',async({page})=>{
+  await page.addInitScript(()=>localStorage.setItem('prodex.openDestination','app:/missing/Terminal.app'));
+  await setup(page);const card=await copyFixture(page,'codex','running','session');
+  await expect(card.getByRole('button',{name:'Open in Terminal'})).toBeVisible();
+  await card.getByRole('combobox',{name:'Open session with'}).selectOption('other');
+  await expect(card.getByRole('button',{name:'Open in Terminal'})).toBeVisible();
+  expect(await page.evaluate(()=>localStorage.getItem('prodex.openDestination'))).toBe('app:/missing/Terminal.app');
+  expect(await page.evaluate(()=>(window as any).__openedSession)).toBeNull();
+});
+
+
+test('empty projects show one planning message instead of duplicate empty labels',async({page})=>{
+  await setup(page);
+  await page.evaluate(()=>{const s=(window as any).__testState;s.planning_activity=[{project:'/projects/app-1',message:'Looking for work…',next_check_at:null}];});
+  const project=page.locator('[data-project="/projects/app-1"]');
+  await expect(project).toContainText('Looking for work…');
+  await expect(project).not.toContainText('No current ideas');
+  await expect(project).not.toContainText('No Prodex sessions yet');
 });

@@ -1,6 +1,6 @@
 # Architecture and implementation boundaries
 
-This document describes the initial Rust implementation. `plan.md` is the acceptance/progress ledger; a compiled module is not evidence that a real-provider or packaged-desktop acceptance gate passed.
+This document describes the initial Rust implementation. `docs/release-readiness.md` tracks public release gates; a compiled module is not evidence that a real-provider or packaged-desktop acceptance gate passed.
 
 ## Ownership and contracts
 
@@ -18,7 +18,7 @@ This document describes the initial Rust implementation. `plan.md` is the accept
 | `WorkerEvent` | Process started, normalized output, and final result combining protocol completion with actual exit status |
 | `Request` / `Response` | JSON control protocol over a local Unix socket; shared by CLI and desktop |
 
-The shared protocol version is currently 7, including explicit folder permission and live observation. Schema version 2 migrates legacy all-project scope to an empty selection; automatic work is disabled and paused for that migration. The desktop disables controls and requests a service restart when versions differ. Providers are concrete modules behind dispatch functions, not yet a broad capability trait. Adapter support for a resume argument is distinct from an implemented UI/control workflow to resume an existing task.
+The shared protocol version is currently 8, including explicit folder permission and live observation. Schema version 3 records launches by task and attempt; the version 2 migration migrates legacy all-project scope to an empty selection; automatic work is disabled and paused for that migration. The desktop disables controls and requests a service restart when versions differ. Providers are concrete modules behind dispatch functions, not yet a broad capability trait. Adapter support for a resume argument is distinct from an implemented UI/control workflow to resume an existing task.
 
 ## Serialized decisions, parallel workers
 
@@ -82,7 +82,7 @@ Pause prevents new launches; current workers continue. Stop interrupts an owned 
 - Native app attachment: a persisted session is not proof of automatic desktop sidebar visibility, live mirroring, or safe takeover. CLI fallback exposes results/session IDs; native handoff needs its own capability and acceptance test.
 - Main-session contents and adoption: live interactive Codex terminal presence can activate a project, but Prodex does not read/control its conversation. Desktop/IDE-only and remote discovery, Claude-triggered activation, and rich milestone triggers remain unsupported.
 - Full proposal semantics: lexical scope and prompt deduplication cannot prove that a proposed task belongs to the objective or will avoid all conceptual conflicts. Approval remains the default.
-- Production recovery and packaging: no multi-machine coordination, Windows transport, unattended integration, guaranteed descendant cleanup across detached process sessions, or fresh-install acceptance is implied.
+- Production recovery and packaging: no multi-machine coordination, Windows transport, guaranteed descendant cleanup across detached process sessions, or fresh-install acceptance is implied.
 
 Future adapters and GUI features should extend these contracts without bypassing service policy. Parallel implementation can proceed behind stable contracts, while migrations, shared types, scheduler integration, and final acceptance remain serialized.
 
@@ -120,3 +120,8 @@ setup profile. Workspace changes are refused while managed work is active.
 Completed editing results require explicit manual review/integration
 acknowledgement before dependencies are eligible. Terminal handoffs do not change
 review state and do not prove that integration occurred.
+
+
+## Background integration
+
+`merge` creates a coordinator-owned `TaskMode::Merge` job linked to one succeeded worktree task. The same worker lifecycle supplies launch accounting, stop, timeout, retry and recovery. Merge jobs serialize managed project work. A prelaunch Git snapshot records destination branch/HEAD and local changes in SQLite metadata. After worker success a separate read-only verification checks ancestry, worktree cleanliness, destination identity/history and local-change preservation. Only verified success atomically updates the merge job and source review to Integrated. The UI hides internal merge rows and shows progress on the coding card. The previous manual acknowledgement request remains for compatibility, but is not used by the new desktop merge action.

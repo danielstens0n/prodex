@@ -13,6 +13,6 @@ Codex and Claude remain worker providers. Real-provider end-to-end validation an
 native app handoff remain release gates.
 
 - [Run the development build](docs/development.md)
-- [Implementation plan and progress](plan.md)
+- [Release readiness](docs/release-readiness.md)
 - [Architecture and current limitations](docs/architecture.md)
 - [Desktop setup](apps/desktop/README.md)

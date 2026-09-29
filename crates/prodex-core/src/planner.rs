@@ -144,6 +144,7 @@ Context JSON:
 "#
     );
     RunSpec {
+        integration_project: None,
         provider,
         cwd: project.path.clone(),
         prompt,

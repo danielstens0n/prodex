@@ -148,7 +148,7 @@ fn repository_root(project: &Path) -> Result<PathBuf> {
         .context("resolve repository root")
 }
 
-fn git(project: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(project: &Path, args: &[&str]) -> Result<String> {
     let mut command = git_command(project);
     command.args(args);
     let output = bounded_output(&mut command, GIT_TIMEOUT).context("run git")?;

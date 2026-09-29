@@ -21,7 +21,7 @@ fn build_command(spec: &RunSpec, has_key: bool) -> Result<Command> {
     let tools = match spec.mode {
         TaskMode::ReadOnly => "Read,Glob,Grep",
         TaskMode::Edit | TaskMode::EditInPlace => "Read,Glob,Grep,Edit,Write",
-        TaskMode::InitializeRepository => "Read,Glob,Grep,Edit,Write,Bash",
+        TaskMode::InitializeRepository | TaskMode::Merge => "Read,Glob,Grep,Edit,Write,Bash",
     };
     let mut command = Command::new("claude");
     command.current_dir(&spec.cwd).args([
@@ -33,7 +33,11 @@ fn build_command(spec: &RunSpec, has_key: bool) -> Result<Command> {
         "--restricted",
         "--strict-mcp-config",
         "--permission-mode",
-        "dontAsk",
+        if spec.mode == TaskMode::Merge {
+            "auto"
+        } else {
+            "dontAsk"
+        },
         "--permission-prompts",
         "none",
         "--tools",
@@ -41,10 +45,20 @@ fn build_command(spec: &RunSpec, has_key: bool) -> Result<Command> {
         "--allowedTools",
         if spec.mode == TaskMode::InitializeRepository {
             "Read,Glob,Grep,Edit,Write,Bash(git *)"
+        } else if spec.mode == TaskMode::Merge {
+            "Read,Glob,Grep,Edit,Write"
         } else {
             tools
         },
     ]);
+    if spec.mode == TaskMode::Merge {
+        let project = spec
+            .integration_project
+            .as_ref()
+            .context("Merge destination missing")?;
+        anyhow::ensure!(project.is_absolute(), "Merge destination must be absolute");
+        command.arg("--add-dir").arg(project);
+    }
     // Keep this adapter on its declared API-key path even when the host shell
     // also has an interactive subscription or cloud-provider configuration.
     for name in [
@@ -147,12 +161,32 @@ mod tests {
 
     fn spec(mode: TaskMode) -> RunSpec {
         RunSpec {
+            integration_project: None,
             provider: Provider::Claude,
             cwd: "/tmp/project with spaces".into(),
             prompt: "a prompt; $(not a shell command)".into(),
             mode,
             session_id: None,
         }
+    }
+
+    #[test]
+    fn merge_uses_classifier_instead_of_blanket_shell_allowance() {
+        let mut spec = spec(TaskMode::Merge);
+        spec.integration_project = Some("/tmp/main".into());
+        let cmd = build_command(&spec, true).unwrap();
+        let args: Vec<_> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert!(args.windows(2).any(|a| a == ["--permission-mode", "auto"]));
+        assert!(args.windows(2).any(|a| a == ["--add-dir", "/tmp/main"]));
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["--allowedTools", "Read,Glob,Grep,Edit,Write"])
+        );
+        assert!(!args.iter().any(|a| a.contains("bypass")));
     }
 
     #[test]
@@ -205,6 +239,7 @@ mod tests {
     #[test]
     fn git_setup_allows_git_shell_without_enabling_unrestricted_shell() {
         let spec = RunSpec {
+            integration_project: None,
             provider: crate::model::Provider::Claude,
             cwd: "/tmp/project".into(),
             prompt: "setup".into(),

@@ -279,6 +279,40 @@ impl Store {
     }
 
     /// Persist reservation and budget charge together before creating external processes.
+    pub fn save_merge_baseline(
+        &self,
+        id: &str,
+        value: &crate::integration::Baseline,
+    ) -> Result<()> {
+        self.set_meta(&format!("merge_baseline:{id}"), value)
+    }
+    pub fn merge_baseline(&self, id: &str) -> Result<crate::integration::Baseline> {
+        self.meta(&format!("merge_baseline:{id}"))?
+            .context("Merge baseline missing")
+    }
+    pub fn complete_merge(
+        &mut self,
+        job: &mut TaskRecord,
+        source: &mut TaskRecord,
+        summary: String,
+    ) -> Result<()> {
+        job.status = TaskStatus::Succeeded;
+        job.pid = None;
+        job.summary = summary;
+        job.updated_at = now();
+        source.review = ReviewStatus::Integrated;
+        source.updated_at = now();
+        let tx = self.db.transaction()?;
+        for task in [job, source] {
+            tx.execute(
+                "UPDATE tasks SET data=? WHERE id=?",
+                params![serde_json::to_string(task)?, task.id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn reserve(&mut self, task: &mut TaskRecord) -> Result<()> {
         task.status = TaskStatus::Starting;
         task.updated_at = now();

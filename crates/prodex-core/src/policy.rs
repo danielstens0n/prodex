@@ -49,7 +49,10 @@ pub(crate) fn coding_task(proposal: &TaskProposal) -> Result<(), String> {
     if proposal.provider != Provider::Mock
         && !matches!(
             proposal.mode,
-            TaskMode::Edit | TaskMode::EditInPlace | TaskMode::InitializeRepository
+            TaskMode::Edit
+                | TaskMode::EditInPlace
+                | TaskMode::InitializeRepository
+                | TaskMode::Merge
         )
     {
         return Err(
@@ -198,6 +201,16 @@ pub fn eligible(task: &TaskRecord, snapshot: &Snapshot, starts_today: usize) -> 
             .iter()
             .find(|other| &other.id == id)
             .ok_or("dependency does not exist")?;
+        if task.proposal.mode == TaskMode::Merge {
+            if dependency.status != TaskStatus::Succeeded
+                || dependency.proposal.mode != TaskMode::Edit
+                || dependency.proposal.project != task.proposal.project
+                || dependency.worktree.is_none()
+            {
+                return Err("Merge requires a completed coding worktree in this project".into());
+            }
+            continue;
+        }
         if dependency.status != TaskStatus::Succeeded
             || !matches!(
                 dependency.review,
@@ -207,14 +220,14 @@ pub fn eligible(task: &TaskRecord, snapshot: &Snapshot, starts_today: usize) -> 
             return Err("dependency has not succeeded and completed required integration".into());
         }
     }
-    let direct = task.proposal.mode == TaskMode::EditInPlace
+    let direct = matches!(task.proposal.mode, TaskMode::EditInPlace | TaskMode::Merge)
         || snapshot
             .projects
             .iter()
             .any(|p| p.path == task.proposal.project && !p.use_worktrees);
     if active.iter().any(|other| {
         other.proposal.project == task.proposal.project
-            && (direct || other.proposal.mode == TaskMode::EditInPlace)
+            && (direct || matches!(other.proposal.mode, TaskMode::EditInPlace | TaskMode::Merge))
     }) {
         return Err("Main-folder editing runs one Prodex task at a time".into());
     }

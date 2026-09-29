@@ -13,15 +13,21 @@ pub fn command(spec: &RunSpec) -> anyhow::Result<Command> {
         );
     }
     let mut command = Command::new("codex");
-    command.current_dir(&spec.cwd).args([
-        "--no-daemon",
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--json",
-    ]);
+    command.current_dir(&spec.cwd).arg("--no-daemon");
+    if spec.mode == TaskMode::Merge {
+        command.arg("--approve-for-me");
+    } else {
+        command.args(["--ask-for-approval", "never"]);
+    }
+    command.args(["exec", "--ignore-user-config", "--ignore-rules", "--json"]);
+    if spec.mode == TaskMode::Merge {
+        let project = spec
+            .integration_project
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Merge destination missing"))?;
+        anyhow::ensure!(project.is_absolute(), "Merge destination must be absolute");
+        command.arg("--add-dir").arg(project);
+    }
     if spec.mode == TaskMode::InitializeRepository {
         command.args([
             "-c",
@@ -110,6 +116,34 @@ mod tests {
     use crate::model::Provider;
 
     #[test]
+    fn merge_uses_automatic_review_and_explicit_destination() {
+        let spec = RunSpec {
+            integration_project: Some("/tmp/main project".into()),
+            provider: Provider::Codex,
+            cwd: "/tmp/worktree".into(),
+            prompt: "merge".into(),
+            mode: TaskMode::Merge,
+            session_id: None,
+        };
+        let command = command(&spec).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert!(args.iter().any(|a| a == "--approve-for-me"));
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["--add-dir", "/tmp/main project"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["--sandbox", "workspace-write"])
+        );
+        assert!(!args.iter().any(|a| a.contains("danger") || a == "never"));
+    }
+
+    #[test]
     fn normalizes_session_and_final_text_without_billing_guess() {
         assert_eq!(
             parse_line(r#"{"type":"thread.started","thread_id":"thread-1"}"#),
@@ -159,6 +193,7 @@ mod tests {
     #[test]
     fn main_folder_coding_remains_sandboxed_and_can_run_without_git() {
         let spec = RunSpec {
+            integration_project: None,
             provider: Provider::Codex,
             cwd: "/tmp/project".into(),
             prompt: "code".into(),
@@ -182,6 +217,7 @@ mod tests {
     #[test]
     fn setup_grants_only_scoped_git_metadata_access() {
         let spec = RunSpec {
+            integration_project: None,
             provider: Provider::Codex,
             cwd: "/tmp/project".into(),
             prompt: "setup".into(),
@@ -205,6 +241,7 @@ mod tests {
                 .any(|a| a.contains("danger") || a.contains("bypass") || a == "--sandbox")
         );
         let edit = command(&RunSpec {
+            integration_project: None,
             mode: TaskMode::Edit,
             ..spec
         })
@@ -220,6 +257,7 @@ mod tests {
     #[test]
     fn command_keeps_prompts_out_of_args_and_resume_explicit() {
         let spec = RunSpec {
+            integration_project: None,
             provider: Provider::Codex,
             cwd: "/tmp/project with spaces".into(),
             prompt: "do not put this in argv".into(),

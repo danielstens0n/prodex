@@ -89,7 +89,7 @@ async function refresh() {
   refreshing = (async () => {
     try {
       let next = await request<Snapshot>({command:"status"});
-      if (next.protocol_version !== 7) {
+      if (next.protocol_version !== 8) {
         showError("Restart the updated Prodex service to use these settings.");
         throw new Error("Service update required");
       }
@@ -212,9 +212,8 @@ function taskButton(label:string, command:string, id:string) {
     }
   }); return button;
 }
-type CopyKind = "prompt"|"session_id"|"resume";
+type CopyKind = "prompt"|"resume";
 let copied: {id:string;kind:CopyKind;until:number}|null=null;
-const ownsSession = (task:Task) => ["starting","running","stopping","recovery_required"].includes(task.status);
 const quote = (value:string) => "'" + value.replaceAll("'", "'\\''") + "'";
 async function copyTask(id:string, kind:CopyKind) {
   if(busy || !connected)return;
@@ -228,7 +227,6 @@ async function copyTask(id:string, kind:CopyKind) {
       if(!task.session_id || task.proposal.provider==="mock")throw new Error("This suggestion has no provider session yet.");
       text=task.session_id;
       if(kind==="resume") {
-        if(ownsSession(task))throw new Error("Stop this task before resuming it in your terminal.");
         const command=task.proposal.provider==="codex" ? "codex resume --include-non-interactive" : "claude --resume";
         text=`cd -- ${quote(task.worktree ?? task.proposal.project)} && ${command} ${quote(task.session_id)}`;
       }
@@ -245,34 +243,83 @@ function copyButton(label:string, kind:CopyKind, id:string) {
   button.setAttribute("aria-label",label);button.dataset.action=`copy-${kind}`;
   button.onclick=()=>void copyTask(id,kind);return button;
 }
+interface Destination {id:string;label:string;kind:string}
+let destinations:Destination[]=[{id:"terminal",label:"Terminal",kind:"terminal"}];
+let preferredDestination="terminal";
+try {preferredDestination=localStorage.getItem("prodex.openDestination")||"terminal";}catch{}
+let destinationMenuFocused=false;
+let openNotice:{id:string;text:string}|null=null;
+function availableDestinations(task:Task) {
+  return destinations.filter(d=>(d.kind!=="codex"||task.proposal.provider==="codex")&&(d.kind!=="claude"||task.proposal.provider==="claude"));
+}
+function destinationFor(task:Task) {
+  const available=availableDestinations(task);
+  return available.find(d=>d.id===preferredDestination)??available.find(d=>d.id==="terminal")??available[0];
+}
+async function loadDestinations() {
+  try {destinations=await invoke<Destination[]>("list_destinations",{custom:preferredDestination.startsWith("app:")?preferredDestination:null});render();}
+  catch { /* Existing Copy command remains available if discovery fails. */ }
+}
+async function chooseDestination(value:string) {
+  try {
+    if(value==="other") {
+      const app=await invoke<Destination|null>("pick_destination");
+      if(!app)return;
+      destinations=destinations.filter(d=>d.id!==app.id);destinations.push(app);value=app.id;
+    }
+    preferredDestination=value;
+    try {localStorage.setItem("prodex.openDestination",value);}catch{}
+    openNotice=null;opened=null;
+  } catch(error){showError(error);}
+  finally {destinationMenuFocused=false;render();}
+}
 let opened: {id:string;action:string;until:number}|null=null;
 async function openTask(id:string,action="terminal") {
   if(busy || !connected)return;
   busy=true;controls();opened=null;
   try {
-    await invoke("open_session",{id,action});
+    const task=state?.tasks.find(t=>t.id===id);
+    const destination=task&&destinationFor(task);
+    if(!destination)throw new Error("Choose an installed app, or use Copy command.");
+    const notice=await invoke<string|null>("open_session",{id,action,destination:destination.id});
+    openNotice=notice?{id,text:notice}:null;
     el("error").hidden=true;opened={id,action,until:Date.now()+2500};
   } catch(error) {showError(error);}
   finally {busy=false;render();}
 }
 function openButton(id:string) {
+  const task=state!.tasks.find(t=>t.id===id)!;
+  const destination=destinationFor(task);
+  const label=destination?`Open in ${destination.label}`:"Open in…";
+  const group=document.createElement("span");group.className="open-destination";
   const button=document.createElement("wa-button") as WaButton;
-  button.textContent=opened?.id===id && opened.action==="terminal" && opened.until>Date.now() ? "Opened" : "Open in Terminal";
-  button.setAttribute("size","small");button.setAttribute("variant","brand");button.setAttribute("aria-label","Open in Terminal");
-  button.prepend(icon(icons.terminal,"start"));
-  button.title="Resume in macOS Terminal.app";button.dataset.action="open-session";
-  button.onclick=()=>void openTask(id);return button;
+  button.textContent=opened?.id===id && opened.action==="terminal" && opened.until>Date.now() ? "Opened" : label;
+  button.setAttribute("size","small");button.setAttribute("variant","brand");button.setAttribute("aria-label",label);
+  button.prepend(icon(icons.terminal,"start"));button.dataset.action="open-session";
+  button.onclick=()=>void openTask(id);
+  const select=document.createElement("select");select.className="destination-select";
+  select.setAttribute("aria-label","Open session with");select.title="Choose an app · remembered for next time";
+  for(const app of availableDestinations(task)) {
+    const detail=app.kind==="editor"?" · folder + copied command":app.kind==="clipboard"?" · copied command":app.kind==="claude"?" · use /resume":"";
+    select.add(new Option(app.label+detail,app.id));
+  }
+  select.add(new Option("Other app…","other"));select.value=destination?.id??"";
+  select.onfocus=()=>{destinationMenuFocused=true;};
+  select.onblur=()=>{destinationMenuFocused=false;};
+  select.onchange=()=>void chooseDestination(select.value);
+  group.append(button,select);return group;
 }
 function awaitsReview(task:Task) {return task.status==="succeeded" && ["awaiting_review","accepted"].includes(task.review) && (Boolean(task.worktree) || task.proposal.mode==="edit_in_place");}
-const completionLabels={merge:"Review and merge locally",pr:"Create PR",terminal:"Open in Terminal"};
+const completionLabels={merge:"Merge locally",terminal:"Open in Terminal"};
 type CompletionAction=keyof typeof completionLabels;
 const savedActions=savedList("prodex.completionOrder").filter((a):a is CompletionAction=>Object.hasOwn(completionLabels,a));
 let completionOrder:CompletionAction[]=[...new Set([...savedActions,...Object.keys(completionLabels) as CompletionAction[]])];
 function completionButton(id:string, action:CompletionAction, primary:boolean) {
-  if(action==="terminal"){const button=openButton(id);if(!primary)button.removeAttribute("variant");return button;}
+  if(action==="terminal"){const button=openButton(id);if(!primary)button.querySelector("wa-button")?.removeAttribute("variant");return button;}
   const button=document.createElement("wa-button") as WaButton;button.textContent=completionLabels[action];button.setAttribute("size","small");if(primary)button.setAttribute("variant","brand");button.dataset.action=`completion-${action}`;
   button.title="Continue this session in Terminal with focused instructions";
-  button.onclick=()=>void openTask(id,action);return button;
+  if(action==="merge")button.title="Review and merge in the background. Done is verified automatically.";
+  button.onclick=()=>action==="merge"?void mutate({command:"merge",id}):void openTask(id,action);return button;
 }
 function renderCompletionOrder() {
   const list=el("completion-order");list.replaceChildren();
@@ -368,6 +415,7 @@ function projectHeader(path:string,index:number,live:boolean) {
 }
 const revealedHistory = new Set<string>();
 function renderActivity() {
+  if(destinationMenuFocused)return;
   if(draggedProject)return;
   const list=el("activity-list");
   const expanded=new Set([...list.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d=>d.dataset.id));
@@ -395,7 +443,9 @@ function renderActivity() {
     group.ondrop=e=>{e.preventDefault();const source=draggedProject;draggedProject=null;if(source)moveProject(source,path);};
     const allowed=scope().includes(path);
     const planning=state.planning_activity?.find(p=>p.project===path);
+    let hasPlanningStatus=false;
     if(connected && enabled() && !state.settings.paused && planning && planning.message!=="Task needs attention") {
+      hasPlanningStatus=true;
       const label=planning.next_check_at ? `${planning.daily_limit_reached ? "Daily check limit · resets" : "Next check"} in ${duration(planning.next_check_at-Date.now()/1000)}` : planning.message;
       const progress=textNode("p",label,"planning-status");progress.title=planning.message;
       if(planning.message.startsWith("Could not"))progress.textContent=`${planning.message}. ${label}`;
@@ -405,22 +455,24 @@ function renderActivity() {
       }
       content.append(row);
     }
-    const projectTasks=state.tasks.filter(t=>t.proposal.project===path).sort((a,b)=>Number(b.proposal.mode==="initialize_repository")-Number(a.proposal.mode==="initialize_repository")||b.updated_at-a.updated_at);
+    const projectTasks=state.tasks.filter(t=>t.proposal.project===path && t.proposal.mode!=="merge").sort((a,b)=>Number(b.proposal.mode==="initialize_repository")-Number(a.proposal.mode==="initialize_repository")||b.updated_at-a.updated_at);
     const isArchived=(t:Task)=>t.status==="rejected" || (t.proposal.mode==="initialize_repository" && t.status==="interrupted") || (t.status==="succeeded" && !awaitsReview(t));
     const archived=projectTasks.filter(isArchived);
     const historyLabel=archived.some(t=>t.status==="succeeded") ? archived.some(t=>t.status==="rejected") ? "completed and rejected" : "completed" : archived.some(t=>t.status==="rejected") ? "rejected" : "past tasks";
     const tasks=projectTasks.filter(t=>!isArchived(t));
     const history=textNode("div","","task-history");history.id=`history-${paths.indexOf(path)}`;
-    if(!tasks.length)content.append(textNode("p",archived.length ? "No current ideas." : "No Prodex sessions yet.","helper"));
+    if(!tasks.length && !hasPlanningStatus)content.append(textNode("p","No current ideas.","helper"));
     if(revealedHistory.has(path))tasks.push(...archived);
     for(const task of tasks) {
+      const integration=state.tasks.filter(t=>t.proposal.mode==="merge"&&t.proposal.dependencies?.includes(task.id)).reverse().sort((a,b)=>b.created_at-a.created_at)[0];
+      const merging=integration&&["queued","starting","running","stopping","recovery_required"].includes(integration.status);
       const card=document.createElement("details");card.className="task";card.dataset.id=task.id;card.open=expanded.has(task.id);
       const summary=textNode("summary", "");
       const title=textNode("span",task.proposal.brief?.title || sessionTitle(task.proposal.prompt),"task-title");title.title=task.proposal.prompt;
-      const age=textNode("span",elapsed(task),"task-meta");age.title=awaitsReview(task) ? "Ready to review" : task.status.replaceAll("_"," ");
+      const age=textNode("span",elapsed(merging?integration:task),"task-meta");age.title=awaitsReview(task) ? "Ready to review" : task.status.replaceAll("_"," ");
       const chevron=textNode("span","","task-chevron");chevron.setAttribute("aria-hidden","true");
       chevron.append(icon(icons.chevron));
-      summary.append(statusIcon(task.status),title,age,chevron);card.append(summary);
+      summary.append(statusIcon(merging?integration.status:task.status),title,age,chevron);card.append(summary);
       const body=textNode("div","","task-body");
       if(task.automatic && task.status==="queued" && !sessions.length)body.append(textNode("p","Waiting for Codex before launch."));
       const setupBlocked=task.proposal.dependencies?.some(id=>state?.tasks.some(t=>t.id===id && t.proposal.mode==="initialize_repository" && t.status!=="succeeded"));
@@ -428,7 +480,8 @@ function renderActivity() {
       if(task.proposal.mode==="initialize_repository")body.append(textNode("p","Runs directly in this project folder to set up Git.","helper"));
       const direct=["awaiting_approval","queued","needs_retry","failed"].includes(task.status) && ["edit","edit_in_place"].includes(task.proposal.mode) ? state.projects.find(p=>p.path===path)?.use_worktrees===false : task.proposal.mode==="edit_in_place";
       if(direct)body.append(textNode("p","Edits the main folder directly. Changes appear immediately.","helper"));
-      if(awaitsReview(task))body.append(textNode("p",task.worktree ? "Ready to review · changes are still in the worktree." : "Ready to review · changes are already in your project.","helper"));
+      if(awaitsReview(task) && !integration)body.append(textNode("p",task.worktree ? "Ready to review · changes are still in the worktree." : "Ready to review · changes are already in your project.","helper"));
+      if(integration && integration.status!=="succeeded")body.append(textNode("p",merging?(integration.status==="recovery_required"?"Merge needs recovery · verify the previous worker stopped before retrying.":integration.status==="queued"?"Merge queued · waiting for capacity.":integration.status==="stopping"?"Stopping merge…":"Merging locally…"):needsRetry(integration)?`Merge needs attention: ${failureReason(integration)}`:"Merge stopped. You can try again.","helper"));
       const actions=textNode("div","","task-actions");
       if(needsRetry(task)) {
         body.append(textNode("p",failureReason(task),"task-retry-reason"));
@@ -437,24 +490,23 @@ function renderActivity() {
       }
       if(task.status==="awaiting_approval"){if(!setupBlocked)actions.append(taskButton("Approve","approve",task.id));actions.append(taskButton("Reject","reject",task.id));}
       if(["queued","starting","running"].includes(task.status))actions.append(taskButton("Stop task","stop",task.id));
+      if(merging && integration.status!=="recovery_required")actions.append(taskButton("Stop merge","stop",integration.id));
       if(task.session_id && task.proposal.provider!=="mock") {
-        if(!ownsSession(task)) {
-          if(task.status==="succeeded") {
-            let first=true;
-            for(const action of completionOrder) {
-              if(action!=="terminal" && !task.worktree)continue;
-              const button=completionButton(task.id,action,first);first=false;actions.append(button);
-            }
-          } else actions.append(openButton(task.id));
-          actions.append(copyButton("Copy resume command","resume",task.id));
-        }
-        actions.append(copyButton("Copy session ID","session_id",task.id));
-        if(ownsSession(task))body.append(textNode("p","Stop the task before resuming it in your terminal.","helper"));
+        if(task.status==="succeeded") {
+          let first=true;
+          for(const action of completionOrder) {
+            if(action!=="terminal" && !task.worktree)continue;
+            if(action!=="terminal" && merging)continue;
+            const button=completionButton(task.id,action,first);first=false;actions.append(button);
+          }
+        } else actions.append(openButton(task.id));
+        actions.append(copyButton("Copy command","resume",task.id));
       } else {
         actions.append(copyButton("Copy prompt","prompt",task.id));
         if(task.status==="awaiting_approval")body.append(textNode("p","A session is created when this suggestion runs.","helper"));
       }
-      if(awaitsReview(task)) {
+      if(openNotice?.id===task.id)body.append(textNode("p",openNotice.text,"helper"));
+      if(awaitsReview(task) && !task.worktree) {
         const done=document.createElement("wa-button") as WaButton;done.setAttribute("size","small");done.textContent=task.worktree ? "Mark as integrated…" : "Mark reviewed";done.dataset.action="acknowledge-result";
         done.onclick=async()=>{const yes=await confirmChoice(task.worktree ? "Have you integrated these changes?" : "Have you reviewed these changes?",task.worktree ? "Confirm only after the changes are merged or applied to your project. Creating a PR is not enough. This records your confirmation and allows dependent tasks to run; it does not merge any files." : "The changes are already in your main folder. This records your review and allows dependent tasks to run.","Confirm");if(yes)void mutate({command:task.worktree ? "confirm_integrated" : "mark_reviewed",id:task.id});};actions.append(done);
       }
@@ -511,4 +563,4 @@ form.addEventListener("change",()=>{
     auto_approve_read_only:false,max_proposal_risk:field("max_proposal_risk").value}});
 });
 form.onsubmit=e=>e.preventDefault();
-controls();void refresh();setInterval(()=>{if(!busy)void refresh();},2000);
+controls();void loadDestinations();void refresh();setInterval(()=>{if(!busy)void refresh();},2000);

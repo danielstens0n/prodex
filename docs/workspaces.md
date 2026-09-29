@@ -48,9 +48,4 @@ preserve existing edits. This cannot serialize human or independently launched
 agent edits. Workspace settings cannot change during an active managed task.
 Existing worktree artifacts and results are preserved across mode changes.
 
-Completed coding tasks remain awaiting review. Worktree merge/PR actions are
-explicit Terminal handoffs; they do not execute Git in the daemon. Manual
-integration acknowledgement records the user's confirmation and unblocks task
-dependencies; it does not prove that a merge occurred. Main-folder changes are
-already applied and only need a review acknowledgement. Built-in base-relative
-and untracked-file diff review and verified automatic integration remain pending.
+Completed coding results remain awaiting review until **Merge locally** runs its managed integration job and Git verification passes. Verification pins the destination branch/history, requires a clean committed result descending from the recorded task base and present in destination history, and compares unrelated tracked/staged/untracked changes with the prelaunch snapshot. A successful model response alone does not integrate a result. Stop, retry and crash recovery preserve worktrees. Unrelated concurrent edits can prevent verification; no automatic stash/reset/cleanup is attempted. Main-folder results still use explicit **Mark reviewed**.

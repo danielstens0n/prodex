@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "Prodex",
+        "dragDropEnabled": false,
         "width": 680,
         "height": 760,
         "minWidth": 540,

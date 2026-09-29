@@ -415,6 +415,7 @@ mod tests {
         stop.send(()).unwrap();
         run(
             RunSpec {
+                integration_project: None,
                 provider: Provider::Mock,
                 cwd: "/tmp".into(),
                 prompt: "test".into(),

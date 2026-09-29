@@ -1,3 +1,4 @@
+pub mod integration;
 pub mod ipc;
 pub mod model;
 pub mod observation;

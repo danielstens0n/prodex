@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct RunSpec {
+    pub integration_project: Option<PathBuf>,
     pub provider: Provider,
     pub cwd: PathBuf,
     pub prompt: String,

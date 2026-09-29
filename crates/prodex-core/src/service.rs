@@ -27,6 +27,11 @@ use tokio::{
 const GIT_SETUP_PROMPT: &str = "Set up Git for this project, directly in the current project folder. This is the only authorized task here. Keep inspection output bounded: exclude target, node_modules, dist, build, vendor, caches and .git from recursive listings, use counts and small samples for large file sets, and summarize included files instead of dumping entire inventories. First inspect Git state; if this project already has a valid HEAD commit, stop without changing anything. Never initialize a nested repository inside an existing parent repository. If there is no repository, run git init in this folder. Review or add appropriate .gitignore entries for generated output, caches, dependencies, credentials and local environment files. Preserve all existing source files and user changes. Review the intended initial snapshot, stage explicit project source paths (not secrets, generated artifacts, unrelated folders, or existing unreviewed staged changes), and create an initial local commit. Use the configured Git author identity; if missing, report that the user needs to configure it rather than inventing an identity or changing global configuration. Do not delete files, rewrite history, add remotes, push, publish, or deploy. Verify git rev-parse --verify HEAD^{commit} and report the commit and included files. Do not implement any other coding tasks.";
 
 enum Message {
+    MergePrepared(
+        String,
+        std::result::Result<crate::integration::Baseline, String>,
+    ),
+    MergeVerified(String, std::result::Result<String, String>),
     Control(Request, oneshot::Sender<Response>),
     Worker(String, WorkerEvent),
     Planner(String, WorkerEvent),
@@ -169,6 +174,8 @@ pub async fn serve(state_dir: &Path) -> Result<()> {
                     };
                     let _ = reply.send(response);
                 },
+                Message::MergePrepared(id,result) => actor.merge_prepared(&id,result)?,
+                Message::MergeVerified(id,result) => actor.merge_verified(&id,result)?,
                 Message::Worker(id, event) => actor.handle_worker_event(&id, event)?,
                 Message::Planner(id, event) => actor.planner_event(&id, event)?,
                 Message::Prepared(id, result) => actor.prepared(&id, result)?,
@@ -200,6 +207,12 @@ pub async fn serve(state_dir: &Path) -> Result<()> {
                     }
                     Some(Message::Planner(id, WorkerEvent::Finished { .. })) => {
                         actor.planning.remove(&id);
+                    }
+                    Some(Message::MergePrepared(id, result)) => {
+                        let _ = actor.merge_prepared(&id, result);
+                    }
+                    Some(Message::MergeVerified(id, result)) => {
+                        let _ = actor.merge_verified(&id, result);
                     }
                     Some(Message::Prepared(id, result)) => {
                         let _ = actor.prepared(&id, result);
@@ -506,6 +519,7 @@ impl Actor {
                     ),
                 )?;
             }
+            Request::Merge { id } => return self.request_merge(&id),
             Request::ConfirmIntegrated { id } => {
                 let mut task = self.store.task(&id)?;
                 if task.status != TaskStatus::Succeeded
@@ -601,7 +615,7 @@ impl Actor {
             Request::Submit { proposal, approved } => {
                 if matches!(
                     proposal.mode,
-                    TaskMode::InitializeRepository | TaskMode::EditInPlace
+                    TaskMode::InitializeRepository | TaskMode::EditInPlace | TaskMode::Merge
                 ) {
                     bail!(
                         "Execution modes are coordinator-owned; submit an edit task and choose the project workspace in Settings"
@@ -633,6 +647,17 @@ impl Actor {
                     started_at: task.started_at.take(),
                     finished_at: task.updated_at,
                 });
+                if task.proposal.mode == TaskMode::Merge {
+                    let source = self.store.task(
+                        task.proposal
+                            .dependencies
+                            .first()
+                            .context("Merge source missing")?,
+                    )?;
+                    task.worktree = source.worktree;
+                    task.branch = source.branch;
+                    task.base_commit = source.base_commit;
+                }
                 task.status = TaskStatus::Queued;
                 task.review = ReviewStatus::NotRequired;
                 task.pid = None;
@@ -711,6 +736,161 @@ impl Actor {
             Request::Shutdown => self.begin_shutdown()?,
         }
         Ok(serde_json::json!({"accepted":true}))
+    }
+
+    fn request_merge(&mut self, id: &str) -> Result<serde_json::Value> {
+        let source = self.store.task(id)?;
+        if source.status != TaskStatus::Succeeded
+            || source.proposal.mode != TaskMode::Edit
+            || source.worktree.is_none()
+        {
+            bail!("Only completed coding worktrees can be merged");
+        }
+        if source.review == ReviewStatus::Integrated {
+            bail!("Task is already integrated");
+        }
+        let snapshot = self.snapshot()?;
+        if snapshot.settings.paused {
+            bail!("Resume Prodex before starting a merge");
+        }
+        if !self.store.project(&source.proposal.project)?.enabled {
+            bail!("Project is disabled");
+        }
+        if let Some(job) = snapshot
+            .tasks
+            .iter()
+            .rev()
+            .find(|t| t.proposal.mode == TaskMode::Merge && t.proposal.dependencies == [id])
+        {
+            if job.status.occupies_slot() || job.status == TaskStatus::Queued {
+                bail!("Integration is already active or awaiting recovery");
+            }
+            if matches!(job.status, TaskStatus::NeedsRetry | TaskStatus::Failed) {
+                return self.control(Request::Retry { id: job.id.clone() });
+            }
+        }
+        let mut job = source.clone();
+        job.id = uuid::Uuid::new_v4().to_string();
+        job.automatic = false;
+        job.attempts.clear();
+        job.started_at = None;
+        job.pid = None;
+        job.session_id = None;
+        job.status = TaskStatus::Queued;
+        job.review = ReviewStatus::NotRequired;
+        job.created_at = now();
+        job.updated_at = now();
+        job.summary.clear();
+        job.proposal.mode = TaskMode::Merge;
+        job.proposal.dependencies = vec![id.into()];
+        job.proposal.expected_files.clear();
+        job.proposal.objective_version = self
+            .store
+            .project(&source.proposal.project)?
+            .objective_version;
+        job.proposal.brief = None;
+        job.proposal.prompt = format!("Merge completed task {id} locally");
+        job.proposal.rationale = "User requested background local integration".into();
+        self.store.save_task(&job)?;
+        self.store.event(
+            Some(&job.id),
+            "merge_requested",
+            &format!("Background integration of {id}; completion requires Git verification"),
+        )?;
+        Ok(serde_json::to_value(job)?)
+    }
+
+    fn merge_prepared(
+        &mut self,
+        id: &str,
+        result: std::result::Result<crate::integration::Baseline, String>,
+    ) -> Result<()> {
+        let cancelled = self.preparing.remove(id).unwrap_or(true);
+        let mut job = self.store.task(id)?;
+        let result = if cancelled || self.shutting_down || job.status != TaskStatus::Starting {
+            Err("Merge cancelled before launch".into())
+        } else {
+            result
+        };
+        match result {
+            Ok(baseline) => {
+                self.store.save_merge_baseline(id, &baseline)?;
+                if baseline.already_integrated {
+                    let source = self.store.task(&job.proposal.dependencies[0])?;
+                    return self.merge_verified(
+                        id,
+                        crate::integration::verify(&source, &baseline)
+                            .map_err(|e| format!("{e:#}")),
+                    );
+                }
+                let mut snapshot = self.snapshot()?;
+                snapshot.tasks.retain(|t| t.id != id);
+                job.status = TaskStatus::Queued;
+                if let Err(error) = policy::eligible(
+                    &job,
+                    &snapshot,
+                    self.store.starts_today()?.saturating_sub(1),
+                ) {
+                    return self.worker_event(
+                        id,
+                        WorkerEvent::Finished {
+                            success: false,
+                            interrupted: true,
+                            summary: error,
+                        },
+                    );
+                }
+                self.launch_worker(&job, snapshot.settings.task_timeout_secs)
+            }
+            Err(error) => self.worker_event(
+                id,
+                WorkerEvent::Finished {
+                    success: false,
+                    interrupted: cancelled || self.shutting_down,
+                    summary: error,
+                },
+            ),
+        }
+    }
+
+    fn merge_verified(
+        &mut self,
+        id: &str,
+        result: std::result::Result<String, String>,
+    ) -> Result<()> {
+        let mut job = self.store.task(id)?;
+        if self.shutting_down || job.status == TaskStatus::Stopping {
+            return self.worker_event(
+                id,
+                WorkerEvent::Finished {
+                    success: false,
+                    interrupted: true,
+                    summary: "Integration stopped; verify Git state before retrying".into(),
+                },
+            );
+        }
+        match result {
+            Ok(summary) => {
+                let mut source = self.store.task(
+                    job.proposal
+                        .dependencies
+                        .first()
+                        .context("Merge source missing")?,
+                )?;
+                self.store.complete_merge(&mut job, &mut source, summary)?;
+                self.workers.remove(id);
+                self.store
+                    .event(Some(&source.id), "integration_verified", &job.summary)
+            }
+            Err(error) => self.worker_event(
+                id,
+                WorkerEvent::Finished {
+                    success: false,
+                    interrupted: false,
+                    summary: format!("Merge could not be verified: {error}"),
+                },
+            ),
+        }
     }
 
     fn submit(
@@ -1025,7 +1205,27 @@ impl Actor {
                 continue;
             }
             self.store.reserve(&mut task)?;
-            if task.proposal.mode == TaskMode::InitializeRepository {
+            if task.proposal.mode == TaskMode::Merge {
+                let source = self.store.task(
+                    task.proposal
+                        .dependencies
+                        .first()
+                        .context("Merge source missing")?,
+                )?;
+                let (placeholder, _) = oneshot::channel();
+                self.workers.insert(task.id.clone(), placeholder);
+                self.preparing.insert(task.id.clone(), false);
+                let sender = self.sender.clone();
+                let id = task.id.clone();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::integration::prepare(&source).map_err(|e| format!("{e:#}"))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = sender.send(Message::MergePrepared(id, result)).await;
+                });
+            } else if task.proposal.mode == TaskMode::InitializeRepository {
                 let (placeholder, _) = oneshot::channel();
                 self.workers.insert(task.id.clone(), placeholder);
                 self.preparing.insert(task.id.clone(), false);
@@ -1142,7 +1342,8 @@ impl Actor {
         } else {
             task.proposal.expected_files.join(", ")
         };
-        let spec = RunSpec {
+        let mut spec = RunSpec {
+            integration_project: None,
             provider: task.proposal.provider,
             cwd: task
                 .worktree
@@ -1167,6 +1368,17 @@ impl Actor {
             mode: task.proposal.mode,
             session_id: None,
         };
+        if task.proposal.mode == TaskMode::Merge {
+            let source = self.store.task(
+                task.proposal
+                    .dependencies
+                    .first()
+                    .context("Merge source missing")?,
+            )?;
+            spec.integration_project = Some(task.proposal.project.clone());
+            spec.prompt =
+                crate::integration::prompt(&source, &self.store.merge_baseline(&task.id)?);
+        }
         let (cancel, receive_cancel) = oneshot::channel();
         self.workers.insert(task.id.clone(), cancel);
         let (events, mut receive_events) = mpsc::channel(64);
@@ -1361,6 +1573,26 @@ impl Actor {
         } = event
         {
             let task = self.store.task(id)?;
+            if task.proposal.mode == TaskMode::Merge {
+                let source = self.store.task(
+                    task.proposal
+                        .dependencies
+                        .first()
+                        .context("Merge source missing")?,
+                )?;
+                let baseline = self.store.merge_baseline(id)?;
+                let sender = self.sender.clone();
+                let id = id.to_owned();
+                tokio::spawn(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::integration::verify(&source, &baseline).map_err(|e| format!("{e:#}"))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = sender.send(Message::MergeVerified(id, result)).await;
+                });
+                return Ok(());
+            }
             if task.proposal.mode == TaskMode::InitializeRepository {
                 let path = task.proposal.project;
                 let sender = self.sender.clone();
@@ -1803,6 +2035,57 @@ impl Actor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_merge_is_explicit_deduplicated_and_completes_atomically() {
+        let (_dir, mut actor, workspace) = preparing_actor();
+        let mut source = actor.store.task("preparing").unwrap();
+        source.worktree = Some(workspace.path);
+        source.branch = Some(workspace.branch);
+        source.base_commit = Some(workspace.base_commit);
+        source.status = TaskStatus::Succeeded;
+        source.review = ReviewStatus::AwaitingReview;
+        actor.store.save_task(&source).unwrap();
+        actor.workers.clear();
+        actor.preparing.clear();
+        let job: TaskRecord =
+            serde_json::from_value(actor.request_merge(&source.id).unwrap()).unwrap();
+        assert_eq!(job.proposal.mode, TaskMode::Merge);
+        assert_eq!(job.proposal.dependencies, vec![source.id.clone()]);
+        assert_eq!(job.worktree, source.worktree);
+        assert_eq!(job.status, TaskStatus::Queued);
+        assert!(actor.request_merge(&source.id).is_err());
+        assert_eq!(
+            actor.store.task(&source.id).unwrap().review,
+            ReviewStatus::AwaitingReview
+        );
+        actor
+            .merge_verified(&job.id, Err("Commit is not merged".into()))
+            .unwrap();
+        assert_eq!(
+            actor.store.task(&source.id).unwrap().review,
+            ReviewStatus::AwaitingReview
+        );
+        assert_eq!(
+            actor.store.task(&job.id).unwrap().status,
+            TaskStatus::NeedsRetry
+        );
+        actor.request_merge(&source.id).unwrap();
+        let retried = actor.store.task(&job.id).unwrap();
+        assert_eq!(retried.worktree, source.worktree);
+        assert_eq!(retried.attempts.len(), 1);
+        actor
+            .merge_verified(&job.id, Ok("Verified commit".into()))
+            .unwrap();
+        assert_eq!(
+            actor.store.task(&source.id).unwrap().review,
+            ReviewStatus::Integrated
+        );
+        assert_eq!(
+            actor.store.task(&job.id).unwrap().status,
+            TaskStatus::Succeeded
+        );
+    }
 
     #[test]
     fn retry_reservation_charges_each_attempt_once() {
