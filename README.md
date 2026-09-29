@@ -1,19 +1,163 @@
-Right now, if you want to build something with AI agents, you have to constantly tell them what to do. This is more effective than the current or the old way of software engineering, where you actually did the work yourself. However, since you now spend a lot of time just waiting for the AI agent to complete, you might as well try to parallelize some of that work. It's not always so easy to think of what I can actually do once this AI agent is running.
-<img width="678" height="719" alt="Screenshot 2026-09-29 at 17 51 16" src="https://github.com/user-attachments/assets/a7faa80a-026b-4d96-8b5f-7513c6229e04" />
+<p align="center">
+  <img src="apps/desktop/src-tauri/icons/icon.png" width="96" height="96" alt="Prodex logo" />
+</p>
 
-Therefore, we want to build Prodex. The main idea is that it's a proactive version of Codex and Claude Code. While you are running, one main thread will also generate recommendations of other things you can do in the meantime to reach your overarching goal. We'll infer what the overarching goal is based on the project, such as reading many files and the code itself. You can have different modes on. We'll also generate what we think are high, medium, and low risk. If you can, you can have settings where you can set that for all low-risk recommendations: just automatically do it.
+<h1 align="center">Prodex</h1>
 
-For instance, if you're building a to-do app and we can see in your main session with Codex that you are focusing on the UI, then we could take time to realize: do we need to improve the backend? Then we can do that practically. The main idea is for this to work out of the gate with Codex and Claude Code, so it should work in any terminal from the get-go: just open tabs in that terminal. Or eventually, we might even build its own interface, but it should be see-live-first, I think.
+<p align="center">Keep building while your coding agent is busy.</p>
 
-## Development
+Prodex finds useful work that can happen alongside your current coding session. It reads your project's goals and code, suggests independent tasks, and runs the ones you approve with Codex or Claude Code. A small desktop app lets you manage suggestions, follow progress, and merge completed work locally.
 
-An initial Rust daemon, CLI, Codex/Claude adapters, proactive proposal loop, and
-Tauri Activity/Settings window are implemented. Explicitly allowed folders activate
-automatic work when an independent interactive Codex terminal session is observed;
-Codex and Claude remain worker providers. Real-provider end-to-end validation and
-native app handoff remain release gates.
+**Early preview · macOS · Build from source.** The core workflow is implemented, but real-provider testing, recovery, and installation still need work. There is no packaged installer yet. See the [release checklist](docs/release-readiness.md) for current gaps.
 
-- [Run the development build](docs/development.md)
-- [Release readiness](docs/release-readiness.md)
-- [Architecture and current limitations](docs/architecture.md)
-- [Desktop setup](apps/desktop/README.md)
+<p align="center">
+  <img width="678" alt="Prodex desktop app showing project activity and task controls" src="https://github.com/user-attachments/assets/a7faa80a-026b-4d96-8b5f-7513c6229e04" />
+</p>
+
+## How it works
+
+1. **Choose a project.** Use **Add projects** to select a folder. Prodex only plans work for projects you connect.
+2. **Keep coding.** An interactive Codex terminal session in that folder activates discovery. Prodex looks for useful parallel work based on the repository's documented goals and current code.
+3. **Approve an idea.** Suggestions require your approval before a coding worker starts. Codex and Claude Code are supported worker providers.
+4. **Follow the work.** See progress in Activity, stop a task, or open its session in a supported terminal or app.
+5. **Merge when ready.** **Merge locally** starts a background integration job. Prodex marks the result integrated only after checking that the committed changes reached the original project. It does not push to GitHub or create a PR.
+
+Coding tasks use separate Git worktrees by default. You can choose main-folder coding per project in Settings; those tasks run one at a time within that project. If a project needs its first Git commit, Prodex proposes a setup task for approval.
+
+## Installation
+
+These instructions target **macOS**. The core uses Unix APIs; Linux desktop support is not validated, and Windows is not supported by the current implementation.
+
+### Requirements
+
+- Git and Apple's Xcode Command Line Tools (`xcode-select --install`).
+- A current stable Rust toolchain with Cargo, supporting Rust edition 2024.
+- Node.js **22.12 or newer** and npm. The repository pins Node 24.20.0 and npm 11.19.0 for Volta users.
+- The `codex` CLI installed, authenticated, and available on your shell's `PATH` for the default workflow.
+- Optional: the `claude` CLI and an `ANTHROPIC_API_KEY` for Claude workers. See [provider configuration](#provider-configuration).
+
+The desktop uses Tauri 2. Check its [platform prerequisites](https://v2.tauri.app/start/prerequisites/) if the native build fails.
+
+### 1. Clone and build
+
+```sh
+git clone https://github.com/danielstens0n/prodex.git
+cd prodex
+cargo build --workspace --locked
+```
+
+### 2. Start the background service
+
+From the repository root:
+
+```sh
+./target/debug/prodex start
+./target/debug/prodex status
+```
+
+The service detaches from your terminal. It runs planning and coding tasks independently of the desktop window.
+
+### 3. Open the desktop app
+
+```sh
+cd apps/desktop
+npm ci
+npm run tauri dev
+```
+
+Keep this development command running while using the app. If you use Volta, you can run it explicitly with the pinned toolchain:
+
+```sh
+volta run --node 24.20.0 --npm 11.19.0 npm run tauri dev
+```
+
+### 4. Connect your first project
+
+In **Activity**, click **Add projects** and select your project folder. In a separate terminal, start an interactive Codex session inside that project. Prodex can also detect an existing session.
+
+Discovery starts for connected projects with an observed session. Review a suggestion and approve it to start coding. **Check now** requests a planning pass; it still respects service limits and may return no suggestions when there is no clear independent task.
+
+Settings controls concurrency, the free-slot threshold, planning frequency, daily planning limits, and the suggestion risk ceiling. Every suggested coding task currently requires approval, regardless of risk.
+
+## Provider configuration
+
+Run these commands from the Prodex repository root while the service is running. Codex is the default planner and worker:
+
+```sh
+./target/debug/prodex configure --provider codex --planner-provider codex
+```
+
+To keep Codex planning but use Claude for coding:
+
+```sh
+./target/debug/prodex configure --provider claude --planner-provider codex
+```
+
+For Claude, make `ANTHROPIC_API_KEY` available in the shell **before starting the service**. This adapter uses API-key authentication; it does not use your Claude subscription login. Changing the desktop's environment does not change the running service's environment.
+
+Provider interfaces are version-sensitive. See the [Codex adapter notes](docs/codex-integration.md) and [Claude adapter notes](docs/claude-integration.md) for implementation details. The current Claude coding profile permits reading and editing files but does not enable shell commands for ordinary coding tasks, so those workers cannot run test suites themselves.
+
+## Service controls and troubleshooting
+
+Closing the desktop leaves the service and its workers running. From the repository root:
+
+```sh
+./target/debug/prodex status
+./target/debug/prodex events --follow
+./target/debug/prodex pause       # Pause discovery and new launches; workers continue
+./target/debug/prodex resume
+./target/debug/prodex stop TASK_ID
+./target/debug/prodex shutdown    # Stop managed work and shut down the service
+```
+
+**The app says the service needs an update.** `npm run tauri dev` starts the desktop only. Rebuilding or restarting it does not replace the running daemon. Finish or stop your managed work before updating, then run from the repository root:
+
+```sh
+git pull --ff-only
+cargo build --workspace --locked
+./target/debug/prodex shutdown
+./target/debug/prodex start
+```
+
+Then restart `npm run tauri dev` from `apps/desktop`. Shutdown preserves files and history, but unfinished work, including pending suggestions, can become interrupted. Seamless upgrades are still on the roadmap.
+
+**No suggestions appear.** Check that the project is connected, a live interactive Codex terminal session is detected, and planning is not paused or limited by capacity, cooldown, or daily limits. Existing pending suggestions may need to be handled first. Claude-only, desktop-only, IDE-only, and remote sessions do not currently activate discovery.
+
+**The app cannot connect.** Run `./target/debug/prodex status`. The app and service must use the same `PRODEX_STATE_DIR`. By default, state and logs live in `~/.local/state/prodex`, with daemon output in `daemon.log`. A custom state directory should be dedicated to Prodex, not an existing project folder.
+
+**Planning resumes when you reopen the app.** The current desktop can resume discovery for previously enabled projects. A CLI pause is not a persistent off switch across desktop restarts; this behavior is a known release gap.
+
+## Data and costs
+
+Prodex stores tasks, events, planner notes, and worktrees locally. It detects session presence through local processes; it does not read your main coding conversation. Planning and worker sessions can send repository context to the configured model provider through its CLI. Local coordination does not mean offline model execution.
+
+Provider usage may incur charges. Concurrency, daily launch limits, and timeouts constrain work, but **there is no monetary spending cap yet**. Avoid sharing credentials or sensitive project content in public issue reports or diagnostic logs.
+
+## Contributing
+
+Bug reports, documentation improvements, and focused pull requests are welcome. For larger changes, [open an issue](https://github.com/danielstens0n/prodex/issues) first to discuss the approach. Include reproduction steps, your macOS and provider CLI versions, and relevant redacted errors when reporting a bug.
+
+The project consists of a Rust service and CLI, plus a Tauri desktop app with TypeScript. Start with the [architecture](docs/architecture.md), [development guide](docs/development.md), and [desktop notes](apps/desktop/README.md).
+
+Run checks relevant to your changes:
+
+```sh
+# From the repository root
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# Desktop
+cd apps/desktop
+npm ci
+npm run build
+npx playwright install chromium
+npm run test:ui
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+Automated service tests use temporary projects and mock workers; they do not prove that authenticated provider workflows work end to end. The [release checklist](docs/release-readiness.md) tracks that validation and other priorities.
+
+## License
+
+The Cargo packages declare MIT licensing. A standalone project license file still needs to be added before the licensing setup is complete. Bundled fonts and icons include their own license notices under `apps/desktop/public/`.
