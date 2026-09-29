@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" class="wa-theme-default wa-light">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Prodex</title></head>
+<body>
+  <main class="preferences">
+    <header><div class="brand"><img class="brand-mark" src="/brand/hyras-logo.svg" width="32" height="32" alt="" /><h1 class="wordmark" aria-label="Prodex">Prodex</h1></div><span id="connection" role="status" class="connection">Connecting</span></header>
+    <nav class="tabs" aria-label="Views" role="tablist"><button id="activity-tab" role="tab" aria-selected="true" aria-controls="activity-panel">Activity</button><button id="settings-tab" role="tab" aria-selected="false" aria-controls="config-panel" tabindex="-1">Settings</button></nav>
+    <section id="activity-panel" class="panel" role="tabpanel" aria-labelledby="activity-tab"><div class="activity-toolbar"><p id="observation-status" class="helper">Checking for Codex sessions…</p><wa-button id="activity-projects" size="small">Add projects</wa-button></div><div id="activity-list" class="activity-list"></div></section>
+    <section id="config-panel" hidden role="tabpanel" aria-labelledby="settings-tab" class="panel" aria-label="Preferences">
+      <nav class="settings-pages" aria-label="Settings pages"><button id="general-page" type="button" aria-pressed="true">General</button><button id="workspaces-page" type="button" aria-pressed="false">Workspaces</button><button id="completion-page" type="button" aria-pressed="false">When finished</button></nav>
+      <div class="settings-content">
+        <form id="config-form" class="config-form">
+          <div id="general-settings"><section id="workload-settings" class="settings-section" aria-labelledby="workload-heading">
+              <h2 id="workload-heading">Workload</h2>
+              <div class="setting"><div><label for="threads">Parallel tasks</label></div><select id="threads" name="max_concurrent" class="short"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select></div>
+              <div class="setting"><div><label for="threshold">Look for more work when</label><p id="threshold-help">Free slots before looking for new tasks.</p></div><select id="threshold" name="planning_free_slots" class="short" aria-describedby="threshold-help"><option value="1">1 free</option><option value="2" selected>2 free</option><option value="3">3 free</option></select></div>
+            </section>
+          <section id="planning-settings" class="settings-section" aria-labelledby="planning-heading">
+              <h2 id="planning-heading">Planning</h2>
+              <div class="setting"><div><label for="check-interval">Check interval</label></div><select id="check-interval" name="planner_cooldown_secs"><option value="30">30 seconds</option><option value="60" selected>1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option><option value="600">10 minutes</option><option value="1800">30 minutes</option></select></div>
+              <div class="setting"><div><label for="daily-checks">Daily check limit</label><p id="daily-help">Across all projects. Resets at midnight UTC.</p></div><input id="daily-checks" name="max_plans_per_day" type="number" min="1" step="1" value="1440" required aria-describedby="daily-help" /></div>
+            </section>
+          <section id="approvals-settings" class="settings-section" aria-labelledby="approvals-heading">
+              <h2 id="approvals-heading">Approvals</h2>
+              <div class="setting"><div><label for="risk">Suggested task risk</label><p id="risk-help">Every task still needs your approval.</p></div><select id="risk" name="max_proposal_risk" aria-describedby="risk-help"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
+            </section>
+          </div><section class="settings-extra" id="workspaces-settings" hidden><h2>Workspaces</h2>
+            <p class="helper">Choose where Prodex makes changes for each project.</p>
+            <label for="workspace-project">Project</label><select id="workspace-project" class="workspace-select"></select>
+            <div class="setting"><div><label for="workspace-mode">Coding workspace</label></div><select id="workspace-mode"><option value="worktree">Use worktrees</option><option value="main">Main folder</option></select></div>
+            <p id="workspace-help" class="settings-note"></p>
+          </section>
+          <section class="settings-extra" id="completion-settings" hidden><h2>When finished</h2>
+            <p class="helper">Drag actions into your preferred order. The first available action is highlighted.</p>
+            <div id="completion-order" role="list" aria-label="Completion action order"></div>
+            <p class="settings-note">Review and merge, or prepare a PR, in the task’s existing Terminal session. Nothing is merged or published automatically. Main-folder changes only need review.</p>
+          </section>
+        </form>
+        <p id="helper" class="helper settings-save-note">Changes save automatically.</p>
+      </div>
+    </section>
+
+    <div id="toast" role="alert" hidden><span id="toast-message"></span><button id="toast-dismiss" type="button" aria-label="Dismiss notification">×</button></div>
+    <p id="error" class="error" role="alert" hidden></p>
+  </main>
+  <dialog id="disconnect-dialog" aria-labelledby="disconnect-title" aria-describedby="disconnect-warning">
+    <h2 id="disconnect-title">Unconnect project?</h2>
+    <p id="disconnect-name"></p>
+    <p id="disconnect-warning">Prodex will stop its running work and planning in this project, cancel pending ideas, and remove the project from Activity. Your files, worktrees, and task history are kept. You can reconnect it with Add projects.</p>
+    <p id="disconnect-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="disconnect-cancel" type="button">Cancel</button><button id="disconnect-confirm" type="button">Unconnect project</button></div>
+  </dialog>
+  <dialog id="choice-dialog" aria-labelledby="choice-title"><h2 id="choice-title"></h2><p id="choice-description"></p><div class="dialog-actions"><button id="choice-cancel" type="button">Cancel</button><button id="choice-confirm" type="button">Continue</button></div></dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

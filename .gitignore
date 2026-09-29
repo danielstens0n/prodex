@@ -1,0 +1,36 @@
+target/
+node_modules/
+dist/
+build/
+vendor/
+/.prodex/
+*.log
+.DS_Store
+
+# Generated output and caches
+.cache/
+cache/
+caches/
+coverage/
+__pycache__/
+*.pyc
+.venv/
+.vite/
+test-results/
+playwright-report/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.aws/
+.ssh/
+.npmrc
+credentials.json
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx

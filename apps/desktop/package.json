@@ -1,0 +1,31 @@
+{
+  "name": "prodex-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "volta": {
+    "node": "24.20.0",
+    "npm": "11.19.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "test:ui": "playwright test",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@awesome.me/webawesome": "^3.14.0",
+    "@hugeicons/core-free-icons": "^4.3.5",
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}
