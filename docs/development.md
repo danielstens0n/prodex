@@ -124,7 +124,7 @@ observed session in an allowed folder; they still obey pause, capacity, and budg
 The default refill threshold is two free slots, capped by concurrency. Suggestions
 above the selected risk ceiling are discarded. The service permits one planner at
 a time, with a one-minute per-project cooldown and up to 1,440 planning passes per UTC day across the service.
-Pending proposals must be handled before another planning pass. Timers and task
+The planner maintains up to ten pending suggestions per project in returned priority order. The desktop shows the first three and promotes reserve ideas after approval or rejection. With fewer than three pending suggestions, planning bypasses the free-worker-slot threshold; reserve replenishment still respects it. Cooldowns, daily budgets, observation and approval checks remain enforced. Suggestions do not occupy worker slots. Timers and task
 completions cannot activate a folder without a qualifying observed session.
 
 Proposals are validated against the current objective version, duplicates, and

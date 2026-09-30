@@ -13,7 +13,7 @@
           <div id="general-settings"><section id="workload-settings" class="settings-section" aria-labelledby="workload-heading">
               <h2 id="workload-heading">Workload</h2>
               <div class="setting"><div><label for="threads">Parallel tasks</label></div><select id="threads" name="max_concurrent" class="short"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select></div>
-              <div class="setting"><div><label for="threshold">Look for more work when</label><p id="threshold-help">Free slots before looking for new tasks.</p></div><select id="threshold" name="planning_free_slots" class="short" aria-describedby="threshold-help"><option value="1">1 free</option><option value="2" selected>2 free</option><option value="3">3 free</option></select></div>
+              <div class="setting"><div><label for="threshold">Refill the reserve when</label><p id="threshold-help">Top three refill regardless of free slots.</p></div><select id="threshold" name="planning_free_slots" class="short" aria-describedby="threshold-help"><option value="1">1 free</option><option value="2" selected>2 free</option><option value="3">3 free</option></select></div>
             </section>
           <section id="planning-settings" class="settings-section" aria-labelledby="planning-heading">
               <h2 id="planning-heading">Planning</h2>

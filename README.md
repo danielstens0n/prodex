@@ -77,7 +77,9 @@ In **Activity**, click **Add projects** and select your project folder. In a sep
 
 Discovery starts for connected projects with an observed session. Review a suggestion and approve it to start coding. **Check now** requests a planning pass; it still respects service limits and may return no suggestions when there is no clear independent task.
 
-Settings controls concurrency, the free-slot threshold, planning frequency, daily planning limits, and the suggestion risk ceiling. Every suggested coding task currently requires approval, regardless of risk.
+Prodex asks the planner for up to ten worthwhile ideas in priority order and shows the top three pending suggestions. Approving or rejecting one reveals the next idea in the reserve. When fewer than three remain, planning can refill even while workers are busy; cooldowns and daily limits still apply. It may return fewer ideas when the project does not support useful independent work.
+
+Settings controls concurrency, the free-slot threshold for reserve planning, planning frequency, daily planning limits, and the suggestion risk ceiling. Every suggested coding task currently requires approval, regardless of risk.
 
 ## Provider configuration
 
@@ -121,7 +123,7 @@ cargo build --workspace --locked
 
 Then restart `npm run tauri dev` from `apps/desktop`. Shutdown preserves files and history, but unfinished work, including pending suggestions, can become interrupted. Seamless upgrades are still on the roadmap.
 
-**No suggestions appear.** Check that the project is connected, a live interactive Codex terminal session is detected, and planning is not paused or limited by capacity, cooldown, or daily limits. Existing pending suggestions may need to be handled first. Claude-only, desktop-only, IDE-only, and remote sessions do not currently activate discovery.
+**No suggestions appear.** Check that the project is connected, a live interactive Codex terminal session is detected, and planning is not paused or limited by capacity, cooldown, or daily limits. A full ten-idea backlog waits for you to handle suggestions before planning more. Claude-only, desktop-only, IDE-only, and remote sessions do not currently activate discovery.
 
 **The app cannot connect.** Run `./target/debug/prodex status`. The app and service must use the same `PRODEX_STATE_DIR`. By default, state and logs live in `~/.local/state/prodex`, with daemon output in `daemon.log`. A custom state directory should be dedicated to Prodex, not an existing project folder.
 

@@ -30,9 +30,17 @@ Automated Git fixtures, mock service tests and command-generation tests cover su
 
 - [ ] Add an actual LICENSE file consistent with the declared MIT package metadata, CONTRIBUTING guidance, a security-reporting policy and support/issue templates.
 - [ ] Add CI for Rust formatting/Clippy/tests, frontend build/UI tests and native macOS builds; establish release/version/changelog automation and dependency/license review.
-- [ ] Rewrite the README around installation, a short demonstration, supported workflows, privacy/data flow, permissions, costs and known limitations.
-- [ ] Audit tracked files and Git history before publication. `plan.md` is ignored and removed from the current index, but remains in earlier history unless history is deliberately rewritten before publishing.
+- [x] Rewrite the README around source installation, supported workflows, privacy/data flow, permissions, costs and known limitations. A fresh-install walkthrough remains part of packaging validation.
+- [x] Publish the public repository after removing `plan.md` from published history and checking for common credential patterns. This pattern scan is not a comprehensive security audit.
 
 ## Current verification boundary
 
 The background-merge implementation checks Git state independently of the agent's final text, preserves original results on failure and shares task recovery/concurrency controls. It does not lock out independent editors/agents, independently certify test execution, guarantee provider permission approval, or provide a production installer. Finish the real workflow and recovery gates before adding more UI or more providers.
+
+## Latest implementation checkpoint
+
+The planner keeps up to ten ranked pending suggestions per project and shows the top three. It refills fewer than three even when workers are busy, while observation, cooldown, daily limits and approval still apply. Each new batch is ranked; existing reserve items retain their position. Useful suggestions are not guaranteed when repository evidence is insufficient.
+
+Blocked merges retain the agent’s explanation alongside Git verification, offer session/IDE handoff and Retry merge, and allow dismissal without deleting worktree files. The live daemon has been upgraded to these controls. A successful authenticated end-to-end merge still needs acceptance validation; current real attempts stopped on overlapping local edits.
+
+Recommended first-release sequence: prove both authenticated provider workflows and recovery; bundle and upgrade the daemon with the desktop; validate a fresh macOS install; add license, CI and contributor/security documentation. Goal/note editing and rejection feedback improve suggestion quality next. Extra providers and broader session observation can follow the initial macOS release.

@@ -287,10 +287,10 @@ async function openTask(id:string,action="terminal") {
   } catch(error) {showError(error);}
   finally {busy=false;render();}
 }
-function openButton(id:string) {
+function openButton(id:string, resolve=false) {
   const task=state!.tasks.find(t=>t.id===id)!;
   const destination=destinationFor(task);
-  const label=destination?`Open in ${destination.label}`:"Open in…";
+  const label=destination?`${resolve?"Resolve in":"Open in"} ${destination.label}`:"Open in…";
   const group=document.createElement("span");group.className="open-destination";
   const button=document.createElement("wa-button") as WaButton;
   button.textContent=opened?.id===id && opened.action==="terminal" && opened.until>Date.now() ? "Opened" : label;
@@ -459,7 +459,13 @@ function renderActivity() {
     const isArchived=(t:Task)=>t.status==="rejected" || (t.proposal.mode==="initialize_repository" && t.status==="interrupted") || (t.status==="succeeded" && !awaitsReview(t));
     const archived=projectTasks.filter(isArchived);
     const historyLabel=archived.some(t=>t.status==="succeeded") ? archived.some(t=>t.status==="rejected") ? "completed and rejected" : "completed" : archived.some(t=>t.status==="rejected") ? "rejected" : "past tasks";
-    const tasks=projectTasks.filter(t=>!isArchived(t));
+    // Store order preserves the planner's ranked array across refresh/restart.
+    const pending=state.tasks.filter(t=>t.proposal.project===path && t.status==="awaiting_approval" && t.proposal.mode!=="merge");
+    pending.sort((a,b)=>Number(b.proposal.mode==="initialize_repository")-Number(a.proposal.mode==="initialize_repository"));
+    const topIdeas=pending.slice(0,3);
+    const tasks=projectTasks.filter(t=>!isArchived(t) && t.status!=="awaiting_approval");
+    tasks.push(...topIdeas);
+    if(pending.length>3)content.append(textNode("p",`Top 3 suggestions · ${pending.length-3} more in reserve`,"helper"));
     const history=textNode("div","","task-history");history.id=`history-${paths.indexOf(path)}`;
     if(!tasks.length && !hasPlanningStatus)content.append(textNode("p","No current ideas.","helper"));
     if(revealedHistory.has(path))tasks.push(...archived);
@@ -491,21 +497,29 @@ function renderActivity() {
       if(task.status==="awaiting_approval"){if(!setupBlocked)actions.append(taskButton("Approve","approve",task.id));actions.append(taskButton("Reject","reject",task.id));}
       if(["queued","starting","running"].includes(task.status))actions.append(taskButton("Stop task","stop",task.id));
       if(merging && integration.status!=="recovery_required")actions.append(taskButton("Stop merge","stop",integration.id));
+      const mergeBlocked=Boolean(integration && !merging && integration.status!=="succeeded" && awaitsReview(task));
       if(task.session_id && task.proposal.provider!=="mock") {
         if(task.status==="succeeded") {
           let first=true;
           for(const action of completionOrder) {
             if(action!=="terminal" && !task.worktree)continue;
             if(action!=="terminal" && merging)continue;
-            const button=completionButton(task.id,action,first);first=false;actions.append(button);
+            const button=action==="terminal" && mergeBlocked ? openButton(integration?.session_id?integration.id:task.id,true) : completionButton(task.id,action,first);
+            if(action==="merge" && mergeBlocked)button.textContent="Retry merge";
+            first=false;actions.append(button);
           }
         } else actions.append(openButton(task.id));
-        actions.append(copyButton("Copy command","resume",task.id));
+        actions.append(copyButton("Copy command","resume",mergeBlocked && integration?.session_id?integration.id:task.id));
       } else {
         actions.append(copyButton("Copy prompt","prompt",task.id));
         if(task.status==="awaiting_approval")body.append(textNode("p","A session is created when this suggestion runs.","helper"));
       }
-      if(openNotice?.id===task.id)body.append(textNode("p",openNotice.text,"helper"));
+      if(openNotice && (openNotice.id===task.id || openNotice.id===integration?.id))body.append(textNode("p",openNotice.text,"helper"));
+      if(mergeBlocked)body.append(textNode("p","Resolve in your preferred app to continue the merge session, or select an IDE to open the worktree. After resolving or merging manually, Retry merge checks Git first; it only starts an agent if integration is still needed.","helper"));
+      if(awaitsReview(task) && !merging) {
+        const dismiss=document.createElement("wa-button") as WaButton;dismiss.setAttribute("size","small");dismiss.textContent="Dismiss result";dismiss.dataset.action="dismiss-result";
+        dismiss.onclick=async()=>{if(await confirmChoice("Dismiss this result?","This hides the task in rejected history. Your changes, worktree and sessions are kept. Nothing is merged, undone or deleted, and dependent tasks remain blocked.","Dismiss result"))void mutate({command:"reject",id:task.id});};actions.append(dismiss);
+      }
       if(awaitsReview(task) && !task.worktree) {
         const done=document.createElement("wa-button") as WaButton;done.setAttribute("size","small");done.textContent=task.worktree ? "Mark as integrated…" : "Mark reviewed";done.dataset.action="acknowledge-result";
         done.onclick=async()=>{const yes=await confirmChoice(task.worktree ? "Have you integrated these changes?" : "Have you reviewed these changes?",task.worktree ? "Confirm only after the changes are merged or applied to your project. Creating a PR is not enough. This records your confirmation and allows dependent tasks to run; it does not merge any files." : "The changes are already in your main folder. This records your review and allows dependent tasks to run.","Confirm");if(yes)void mutate({command:task.worktree ? "confirm_integrated" : "mark_reviewed",id:task.id});};actions.append(done);

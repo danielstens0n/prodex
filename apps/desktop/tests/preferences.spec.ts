@@ -597,3 +597,52 @@ test('empty projects show one planning message instead of duplicate empty labels
   await expect(project).not.toContainText('No current ideas');
   await expect(project).not.toContainText('No Prodex sessions yet');
 });
+
+
+test('shows three ranked ideas and promotes the reserve after approval or rejection',async({page})=>{
+  await setup(page);
+  await page.evaluate(()=>{
+    const s=(window as any).__testState;
+    s.tasks=Array.from({length:10},(_,i)=>({id:`idea-${i}`,status:'awaiting_approval',review:'not_required',created_at:1700000000,updated_at:1700000000+i,
+      proposal:{project:'/projects/app-1',provider:'codex',mode:'edit',prompt:`Useful outcome ${i}`,rationale:'Reach the product goal',completion_criteria:'Acceptance tests pass'}}));
+    s.tasks.push({id:'active',status:'running',created_at:1700000000,updated_at:1700001000,proposal:{project:'/projects/app-1',provider:'codex',mode:'edit',prompt:'Current work'}});
+  });
+  const group=page.locator('[data-project="/projects/app-1"]');
+  await expect(group.locator('details.task')).toHaveCount(4);
+  await expect(group.locator('details.task .task-title')).toHaveText(['Current work','Useful outcome 0','Useful outcome 1','Useful outcome 2']);
+  await expect(group).toContainText('7 more in reserve');
+  await group.locator('[data-id="idea-0"] summary').click();
+  await group.locator('[data-id="idea-0"]').getByRole('button',{name:'Approve',exact:true}).click();
+  await expect(group.locator('[data-id="idea-3"]')).toBeVisible();
+  await expect(group.locator('[data-id="idea-4"]')).toHaveCount(0);
+  await group.locator('[data-id="idea-1"] summary').click();
+  await group.locator('[data-id="idea-1"]').getByRole('button',{name:'Reject',exact:true}).click();
+  await expect(group.locator('[data-id="idea-4"]')).toBeVisible();
+  await expect(group.locator('[data-id="idea-1"]')).toHaveCount(0);
+  await expect(group.locator('[data-id="active"]')).toBeVisible();
+  await expect(group.locator('[data-id="idea-0"]')).toBeVisible();
+});
+
+
+test('blocked merge resumes the merge session and lets users dismiss without deleting files',async({page})=>{
+  await setup(page);const card=await copyFixture(page,'codex','succeeded','coding-session');
+  await page.evaluate(()=>{
+    const s=(window as any).__testState,t=s.tasks[0];
+    t.proposal.mode='edit';t.worktree='/worktrees/task';t.review='awaiting_review';
+    s.tasks.push({...structuredClone(t),id:'blocked-merge',status:'needs_retry',session_id:'merge-session',summary:'Integration blocked: main has overlapping edits in src/app.rs',proposal:{...t.proposal,mode:'merge',dependencies:[t.id]}});
+  });
+  await expect(card).toContainText('main has overlapping edits');
+  await expect(card.getByRole('button',{name:'Retry merge',exact:true})).toBeVisible();
+  await card.getByRole('button',{name:'Resolve in Terminal',exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).__openedSession)).toBe('blocked-merge');
+  await card.getByRole('button',{name:'Copy command',exact:true}).click();
+  expect(await page.evaluate(()=>(window as any).__clipboardText)).toContain('merge-session');
+  await card.getByRole('button',{name:'Dismiss result',exact:true}).click();
+  const dialog=page.getByRole('dialog');await expect(dialog).toContainText('Nothing is merged, undone or deleted');
+  await dialog.getByRole('button',{name:'Dismiss result',exact:true}).click();
+  const history=page.getByRole('button',{name:/Hide rejected/});
+  if(await history.isVisible())await history.click();
+  await expect(card).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).__testState.tasks[0].worktree)).toBe('/worktrees/task');
+  expect(await page.evaluate(()=>(window as any).__testState.tasks[0].review)).toBe('awaiting_review');
+});

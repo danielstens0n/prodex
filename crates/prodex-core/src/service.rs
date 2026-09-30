@@ -305,7 +305,8 @@ impl Actor {
                 ("Task needs attention".into(), None)
             } else if snapshot.tasks.iter().any(|t| {
                 t.proposal.project == project.path && t.status == TaskStatus::AwaitingApproval
-            }) {
+            }) && planner::pending_count(project, &snapshot) >= planner::VISIBLE_PROPOSALS
+            {
                 ("Suggestions ready for approval".into(), None)
             } else if snapshot
                 .tasks
@@ -343,12 +344,13 @@ impl Actor {
                 let message = if self.store.starts_today()? >= snapshot.settings.max_starts_per_day
                 {
                     "Daily task limit reached"
-                } else if snapshot.settings.max_concurrent.saturating_sub(active) < threshold
-                    || snapshot
-                        .settings
-                        .max_per_project
-                        .saturating_sub(project_active)
-                        < threshold
+                } else if planner::pending_count(project, &snapshot) >= planner::VISIBLE_PROPOSALS
+                    && (snapshot.settings.max_concurrent.saturating_sub(active) < threshold
+                        || snapshot
+                            .settings
+                            .max_per_project
+                            .saturating_sub(project_active)
+                            < threshold)
                 {
                     "Waiting for a free slot"
                 } else {
@@ -687,19 +689,47 @@ impl Actor {
             }
             Request::Reject { id } => {
                 let mut task = self.store.task(&id)?;
-                if !matches!(
-                    task.status,
-                    TaskStatus::AwaitingApproval
-                        | TaskStatus::Queued
-                        | TaskStatus::NeedsRetry
-                        | TaskStatus::Failed
-                ) {
-                    bail!("only pending tasks can be rejected");
+                let dismiss_result = task.status == TaskStatus::Succeeded
+                    && matches!(
+                        task.review,
+                        ReviewStatus::AwaitingReview | ReviewStatus::Accepted
+                    )
+                    && matches!(task.proposal.mode, TaskMode::Edit | TaskMode::EditInPlace);
+                if !dismiss_result
+                    && !matches!(
+                        task.status,
+                        TaskStatus::AwaitingApproval
+                            | TaskStatus::Queued
+                            | TaskStatus::NeedsRetry
+                            | TaskStatus::Failed
+                    )
+                {
+                    bail!("only pending tasks or unintegrated results can be dismissed");
+                }
+                if dismiss_result
+                    && self.store.tasks()?.iter().any(|job| {
+                        job.proposal.mode == TaskMode::Merge
+                            && job.proposal.dependencies == [id.clone()]
+                            && (job.status.occupies_slot() || job.status == TaskStatus::Queued)
+                    })
+                {
+                    bail!("Stop the active merge before dismissing this result");
                 }
                 task.status = TaskStatus::Rejected;
+                if dismiss_result {
+                    task.review = ReviewStatus::Rejected;
+                }
                 task.updated_at = now();
                 self.store.save_task(&task)?;
-                self.store.event(Some(&id), "rejected", "Task rejected")?;
+                self.store.event(
+                    Some(&id),
+                    "rejected",
+                    if dismiss_result {
+                        "Result dismissed; files, worktree and sessions preserved. Not integrated."
+                    } else {
+                        "Task rejected"
+                    },
+                )?;
             }
             Request::Pause => self.pause(true)?,
             Request::Resume => self.pause(false)?,
@@ -887,7 +917,11 @@ impl Actor {
                 WorkerEvent::Finished {
                     success: false,
                     interrupted: false,
-                    summary: format!("Merge could not be verified: {error}"),
+                    summary: if job.summary.trim().is_empty() {
+                        format!("Merge could not be verified: {error}")
+                    } else {
+                        format!("{}\n\nGit verification: {error}", job.summary.trim())
+                    },
                 },
             ),
         }
@@ -1581,6 +1615,10 @@ impl Actor {
                         .context("Merge source missing")?,
                 )?;
                 let baseline = self.store.merge_baseline(id)?;
+                // Keep the agent's actionable blocker if independent verification fails.
+                let mut task = task;
+                task.summary = summary.clone();
+                self.store.save_task(&task)?;
                 let sender = self.sender.clone();
                 let id = id.to_owned();
                 tokio::spawn(async move {
@@ -1731,22 +1769,16 @@ impl Actor {
                 .filter(|task| task.proposal.project == project.path && task.status.occupies_slot())
                 .count(),
         );
-        if global_free < threshold || project_free < threshold {
-            bail!(
-                "planning requires at least {threshold} free worker slots globally and in this project"
-            );
+        let pending = planner::pending_count(project, &snapshot);
+        if pending >= planner::MAX_PROPOSALS {
+            bail!("suggestion backlog is full");
         }
-        if snapshot.tasks.iter().any(|t| {
-            t.proposal.project == project.path
-                && matches!(
-                    t.status,
-                    TaskStatus::AwaitingApproval
-                        | TaskStatus::Queued
-                        | TaskStatus::NeedsRetry
-                        | TaskStatus::Failed
-                )
-        }) {
-            bail!("review or run existing proposals before generating more");
+        // Refill the visible choices even when all workers are busy. The
+        // configured free-slot threshold still gates replenishing the reserve.
+        if pending >= planner::VISIBLE_PROPOSALS
+            && (global_free < threshold || project_free < threshold)
+        {
+            bail!("reserve planning requires at least {threshold} free worker slots");
         }
         Ok(())
     }
@@ -1901,20 +1933,8 @@ impl Actor {
                         &format!("Updated planner notebook for {}", current.path.display()),
                     )?;
                 }
-                let global_free = snapshot.settings.max_concurrent.saturating_sub(
-                    snapshot
-                        .tasks
-                        .iter()
-                        .filter(|t| t.status.occupies_slot())
-                        .count(),
-                );
-                let project_free = snapshot.settings.max_per_project.saturating_sub(
-                    snapshot
-                        .tasks
-                        .iter()
-                        .filter(|t| t.proposal.project == current.path && t.status.occupies_slot())
-                        .count(),
-                );
+                let available = planner::MAX_PROPOSALS
+                    .saturating_sub(planner::pending_count(&current, &snapshot));
                 let mut accepted = 0;
                 for proposal in output.proposals {
                     if proposal.risk > snapshot.settings.max_proposal_risk {
@@ -1925,7 +1945,7 @@ impl Actor {
                         )?;
                         continue;
                     }
-                    if accepted >= global_free.min(project_free) {
+                    if accepted >= available {
                         break;
                     }
                     let approved = false;
@@ -2035,6 +2055,66 @@ impl Actor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dismissed_results_preserve_worktree_and_cannot_dismiss_an_active_merge() {
+        let (_dir, mut actor, workspace) = preparing_actor();
+        std::fs::create_dir_all(&workspace.path).unwrap();
+        std::fs::write(workspace.path.join("result.txt"), "keep my changes").unwrap();
+        let mut source = actor.store.task("preparing").unwrap();
+        source.worktree = Some(workspace.path.clone());
+        source.branch = Some(workspace.branch);
+        source.base_commit = Some(workspace.base_commit);
+        source.status = TaskStatus::Succeeded;
+        source.review = ReviewStatus::AwaitingReview;
+        source.summary = "Completed useful changes".into();
+        actor.store.save_task(&source).unwrap();
+        actor.workers.clear();
+        actor.preparing.clear();
+        let mut job: TaskRecord =
+            serde_json::from_value(actor.request_merge(&source.id).unwrap()).unwrap();
+        assert!(
+            actor
+                .control(Request::Reject {
+                    id: source.id.clone()
+                })
+                .is_err()
+        );
+        job.summary = "Integration blocked: main has overlapping edits in src/app.rs".into();
+        actor.store.save_task(&job).unwrap();
+        actor
+            .merge_verified(
+                &job.id,
+                Err("Task worktree still has uncommitted changes".into()),
+            )
+            .unwrap();
+        let failed = actor.store.task(&job.id).unwrap();
+        assert!(
+            failed
+                .summary
+                .starts_with("Integration blocked: main has overlapping edits")
+        );
+        assert!(
+            failed
+                .summary
+                .contains("Git verification: Task worktree still has uncommitted changes")
+        );
+        actor
+            .control(Request::Reject {
+                id: source.id.clone(),
+            })
+            .unwrap();
+        let dismissed = actor.store.task(&source.id).unwrap();
+        assert_eq!(dismissed.status, TaskStatus::Rejected);
+        assert_eq!(dismissed.review, ReviewStatus::Rejected);
+        assert_eq!(dismissed.summary, source.summary);
+        assert_eq!(dismissed.worktree, source.worktree);
+        assert_eq!(
+            std::fs::read_to_string(workspace.path.join("result.txt")).unwrap(),
+            "keep my changes"
+        );
+        assert!(actor.request_merge(&source.id).is_err());
+    }
 
     #[test]
     fn background_merge_is_explicit_deduplicated_and_completes_atomically() {
@@ -2694,7 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn planning_waits_for_threshold_and_clamps_to_small_concurrency() {
+    fn visible_suggestions_refill_when_busy_but_reserve_respects_threshold() {
         let (_directory, mut actor, paths) = activation_actor();
         actor
             .control(Request::SetActivation {
@@ -2709,6 +2789,15 @@ mod tests {
             let mut task = template.clone();
             task.id = format!("active-{index}");
             task.status = TaskStatus::Running;
+            task.proposal.project = paths[0].clone();
+            actor.store.save_task(&task).unwrap();
+        }
+        // No pending ideas: refill is eligible even with workers occupying slots.
+        assert!(actor.planning_eligible(&project).is_ok());
+        for index in 0..3 {
+            let mut task = template.clone();
+            task.id = format!("idea-{index}");
+            task.status = TaskStatus::AwaitingApproval;
             task.proposal.project = paths[0].clone();
             actor.store.save_task(&task).unwrap();
         }
@@ -2738,6 +2827,100 @@ mod tests {
         assert!(actor.store.save_settings(&settings).is_err());
         settings.planning_free_slots = 33;
         assert!(actor.store.save_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn ranked_backlog_survives_reload_and_refills_without_worker_capacity() {
+        let (_directory, mut actor, paths) = activation_actor();
+        actor.set_activation(true, Some(paths.clone())).unwrap();
+        let project = actor.store.project(&paths[0]).unwrap();
+        let (_fixture, fixture_actor, _) = preparing_actor();
+        let mut active = fixture_actor.store.task("preparing").unwrap();
+        active.proposal.project = project.path.clone();
+        active.status = TaskStatus::Running;
+        let mut settings = actor.store.settings().unwrap();
+        settings.max_concurrent = 1;
+        settings.max_per_project = 1;
+        actor.store.save_settings(&settings).unwrap();
+        actor.store.save_task(&active).unwrap();
+        assert!(actor.planning_eligible(&project).is_ok());
+        for round in 0..2 {
+            let id = format!("backlog-{round}");
+            actor.planning.insert(
+                id.clone(),
+                Planning {
+                    automatic: false,
+                    project: project.clone(),
+                    worker_provider: Provider::Mock,
+                    cancel: None,
+                    cancelled: false,
+                },
+            );
+            actor.store.record_plan(&id, &project.path).unwrap();
+            let proposals: Vec<_> = (0..10)
+                .map(|rank| {
+                    serde_json::json!({
+                        "prompt":format!("Implement useful outcome {round}-{rank}"),
+                        "rationale":"Fix a documented user journey",
+                        "completion_criteria":"The journey passes its acceptance test",
+                        "mode":"edit", "expected_files":[format!("src/feature-{round}-{rank}.rs")],
+                        "dependencies":[], "risk":"low"
+                    })
+                })
+                .collect();
+            actor
+                .planner_event(
+                    &id,
+                    WorkerEvent::Finished {
+                        success: true,
+                        interrupted: false,
+                        summary: serde_json::json!({"proposals":proposals}).to_string(),
+                    },
+                )
+                .unwrap();
+            let tasks = actor.store.snapshot().unwrap().tasks;
+            let pending: Vec<_> = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::AwaitingApproval)
+                .collect();
+            assert_eq!(pending.len(), 10);
+            if round == 0 {
+                for (rank, task) in pending.iter().enumerate() {
+                    assert_eq!(
+                        task.proposal.prompt,
+                        format!("Implement useful outcome 0-{rank}")
+                    );
+                }
+                assert!(
+                    actor
+                        .planning_eligible_with_cooldown(&project, true)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("backlog is full")
+                );
+                for task in pending.iter().take(8) {
+                    actor
+                        .control(Request::Reject {
+                            id: task.id.clone(),
+                        })
+                        .unwrap();
+                }
+                assert!(
+                    actor
+                        .planning_eligible_with_cooldown(&project, true)
+                        .is_ok()
+                );
+            } else {
+                // Existing reserve retains priority; new output fills only eight vacancies.
+                assert_eq!(pending[0].proposal.prompt, "Implement useful outcome 0-8");
+                assert_eq!(pending[1].proposal.prompt, "Implement useful outcome 0-9");
+                assert_eq!(pending[9].proposal.prompt, "Implement useful outcome 1-7");
+            }
+        }
+        assert_eq!(
+            actor.store.task(&active.id).unwrap().status,
+            TaskStatus::Running
+        );
     }
 
     #[test]

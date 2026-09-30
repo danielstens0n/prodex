@@ -186,3 +186,15 @@ References: [T3 Code editor preferences](https://github.com/pingdotgg/t3code/blo
 Codex merge workers use `--approve-for-me`, the workspace sandbox, and `--add-dir` for the original project. Claude merge workers use `--permission-mode auto`, the existing restricted mode and an explicit destination directory; shell actions go through its classifier rather than a blanket Bash allowance. Provider/account/managed-policy restrictions can still block a merge and are reported for retry. Neither provider uses a sandbox/approval bypass.
 
 The native Open action only opens/resumes sessions. Merge is owned by the daemon and does not open a terminal. Historical manual integration acknowledgements are retained in the database; new desktop merges require Git verification.
+
+## Ranked suggestion reserve
+
+Activity shows up to three pending ideas per project in the planner's priority order, with up to ten persisted suggestions in total. Approving or rejecting an idea promotes the next one. Running, queued, retry and review cards remain visible independently of this limit; completed and rejected history remains collapsed. Git setup stays ahead of ordinary suggestions.
+
+The planner searches across product gaps, documented migrations, stability issues and justified refactoring before ranking by goal impact, evidence and effort. It may abstain rather than fill the list with low-value work. Fewer than three pending ideas can trigger planning without free worker capacity; the free-slot setting gates only filling the reserve. Cooldowns, daily limits and live-session requirements still apply.
+
+## Recovering a blocked merge
+
+A blocked merge keeps the agent's explanation alongside Git verification details. **Retry merge** checks whether the branch is already integrated before launching another agent. **Resolve in…** opens the failed merge session (rather than the original coding session); choosing an IDE opens the task worktree and copies its resume command. Preserve and commit overlapping main-folder edits before retrying, or resolve the integration manually. Retry merge verifies a completed manual merge; it can start another agent if integration is still needed. Verification currently requires the task commit to be an ancestor of the destination, so squash/cherry-pick integrations are not automatically recognized.
+
+**Dismiss result** moves unintegrated work into rejected history after confirmation, keeping files, worktrees and sessions. It neither reverts edits nor marks the result integrated, and dependent tasks remain blocked. Stop any active merge before dismissing its result.
