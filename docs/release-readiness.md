@@ -44,3 +44,7 @@ The planner keeps up to ten ranked pending suggestions per project and shows the
 Blocked merges retain the agent’s explanation alongside Git verification, offer session/IDE handoff and Retry merge, and allow dismissal without deleting worktree files. The live daemon has been upgraded to these controls. A successful authenticated end-to-end merge still needs acceptance validation; current real attempts stopped on overlapping local edits.
 
 Recommended first-release sequence: prove both authenticated provider workflows and recovery; bundle and upgrade the daemon with the desktop; validate a fresh macOS install; add license, CI and contributor/security documentation. Goal/note editing and rejection feedback improve suggestion quality next. Extra providers and broader session observation can follow the initial macOS release.
+
+## Repeatable end-to-end suite
+
+`./scripts/test-e2e.sh` now runs black-box compiled-daemon workflows in disposable repositories, followed by Rust and browser tests. Coverage includes both provider stream protocols, approval, ranked planning, worktrees, actual fixture commits/merges, independent verification, dirty-file preservation, failure/retry/dismissal, manual integration, dependency gating, main-folder review, pause/stop/unconnect, timeouts, malformed output and crash recovery. Provider executables are deterministic stand-ins; authenticated provider acceptance and native installation/handoff remain open. See [testing guide](e2e-testing.md).

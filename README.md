@@ -158,7 +158,7 @@ npm run test:ui
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-Automated service tests use temporary projects and mock workers; they do not prove that authenticated provider workflows work end to end. The [release checklist](docs/release-readiness.md) tracks that validation and other priorities.
+Run `./scripts/test-e2e.sh` for the complete deterministic suite: real daemon/provider-process/Git workflows, Rust checks, and browser interactions. See the [end-to-end testing guide](docs/e2e-testing.md) for requirements and coverage. Provider executables and browser service responses are simulated; authenticated provider workflows remain a separate gate in the [release checklist](docs/release-readiness.md).
 
 ## License
 
